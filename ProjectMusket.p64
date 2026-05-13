@@ -7,8 +7,9 @@ version 2
 :: src/
 :: main.lua
 --[[pod_format="raw",created="2026-02-15 17:25:45",modified="2026-05-13 02:38:16",revision=274]]
-include("/mygame/src/main.lua")
+include("src/main.lua")
 :: src/main.lua
+--[[pod_format="raw",created="2026-02-15 17:25:45",modified="2026-05-13 02:38:16",revision=274]]
 -- Picotron prototype: move + jump + aim/shoot + recoil + slide + shrine + dash(invuln + afterimage)
 -- Player ammo uses single-shot guns that switch automatically after firing.
 -- Gem score system with collection shards and off-screen indicator.
