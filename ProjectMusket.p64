@@ -220,6 +220,11 @@ local MONSTER = {
   HOP_MAX_FR      = 120,
   EDGE_MARGIN     = 12,
   COLOR           = 8,
+  BLUE_COLOR      = 12,
+  BLUE_CHANCE     = 0.5,
+  BLUE_W          = 28,
+  BLUE_H          = 28,
+  BLUE_HP         = 20,
   HITSTOP_FR      = 2,
   HIT_FLASH_FR    = 6,
   KILL_HITSTOP_FR = 4,
@@ -1219,23 +1224,29 @@ end
 function spawn_monster(side)
   if #monsters >= MONSTER.MAX then return end
 
+  local is_blue = rnd(1) < MONSTER.BLUE_CHANCE
+  local w = is_blue and MONSTER.BLUE_W or MONSTER.W
+  local h = is_blue and MONSTER.BLUE_H or MONSTER.H
+  local hp = is_blue and MONSTER.BLUE_HP or MONSTER.HP
   local x = (side < 0)
     and (-WORLD.HALF + MONSTER.EDGE_MARGIN)
-    or (WORLD.HALF - MONSTER.W - MONSTER.EDGE_MARGIN)
+    or (WORLD.HALF - w - MONSTER.EDGE_MARGIN)
 
   add(monsters, {
     x         = x,
-    y         = WORLD.GROUND_Y - MONSTER.H,
-    w         = MONSTER.W,
-    h         = MONSTER.H,
+    y         = WORLD.GROUND_Y - h,
+    w         = w,
+    h         = h,
     vx        = 0,
     vy        = 0,
-    hp        = MONSTER.HP,
+    hp        = hp,
+    max_hp    = hp,
     hit_flash_t = 0,
     on_ground = true,
     hop_t     = get_monster_hop_wait(),
     facing    = -side,
-    idle_t    = rnd(1)
+    idle_t    = rnd(1),
+    is_blue   = is_blue
   })
 end
 
@@ -1275,7 +1286,12 @@ function update_monster_spawner()
   end
 end
 
-function spawn_monster_gibs(x, y)
+function spawn_monster_gibs(x, y, m)
+  local base_col = MONSTER.COLOR
+  if m then
+    base_col = m.is_blue and MONSTER.BLUE_COLOR or MONSTER.COLOR
+  end
+
   for i = 1, MONSTER_GIB.COUNT do
     local ang = rnd(1)
     local spd = 1.4 + rnd(3.6)
@@ -1286,7 +1302,7 @@ function spawn_monster_gibs(x, y)
       vy = sin(ang) * spd - 1.2,
       t  = MONSTER_GIB.LIFE_FR,
       s  = 1 + (i % MONSTER_GIB.SIZE),
-      c  = (i % 4 == 0) and 8 or ((i % 3 == 0) and 7 or MONSTER.COLOR)
+      c  = (i % 4 == 0) and 8 or ((i % 3 == 0) and 7 or base_col)
     })
   end
 end
@@ -1321,7 +1337,7 @@ function kill_monster(i)
   local m = monsters[i]
   if not m then return end
 
-  spawn_monster_gibs(m.x + m.w / 2, m.y + m.h / 2)
+  spawn_monster_gibs(m.x + m.w / 2, m.y + m.h / 2, m)
   spawn_souls(m.x + m.w / 2, m.y + m.h / 2)
   start_hitstop(MONSTER.KILL_HITSTOP_FR)
   start_shake(MONSTER.KILL_SHAKE_FR, MONSTER.KILL_SHAKE_MAG)
@@ -1496,7 +1512,7 @@ function apply_bullet_hits(x0, x1, y)
   for i = #monsters, 1, -1 do
     local m = monsters[i]
     if aabb_overlap(left, y - 1, width, 2, m.x, m.y, m.w, m.h) then
-      damage_monster(i, MONSTER.HP, true)
+      damage_monster(i, MONSTER.HP, false)
     end
   end
 end
@@ -2135,7 +2151,8 @@ end
 
 function draw_monsters()
   for m in all(monsters) do
-    local body_col = (m.hit_flash_t > 0) and 7 or MONSTER.COLOR
+    local base_col = m.is_blue and MONSTER.BLUE_COLOR or MONSTER.COLOR
+    local body_col = (m.hit_flash_t > 0) and 7 or base_col
     local wobble = m.on_ground and M.sin(m.idle_t) or 0
     local extra_w = m.on_ground and M.floor(M.abs(wobble) * 2) or 0
     local trim_h = m.on_ground and M.floor(M.abs(wobble)) or 0
@@ -2146,6 +2163,12 @@ function draw_monsters()
     local y2 = m.y + m.h - 1 - trim_h
 
     rectfill(x1, y1, x2, y2, body_col)
+
+    if m.max_hp and m.hp < m.max_hp then
+      local mark_w = M.max(4, M.floor(m.w * 0.45))
+      local mark_x = M.floor(m.x + (m.w - mark_w) * 0.5)
+      rectfill(mark_x, m.y + 4, mark_x + mark_w - 1, m.y + 6, 1)
+    end
   end
 end
 
@@ -2907,8 +2930,7 @@ function _draw()
 
   draw_touch_ui()
 end
-:: .info.pod
---[[pod,created="2026-01-15 17:19:56",modified="2026-05-13 05:55:54",runtime=26,workspaces={}]]
+
 :: gfx/.info.pod
 --[[pod,created="2026-01-15 17:19:56",modified="2026-05-13 05:55:54"]]
 :: gfx/0.gfx
