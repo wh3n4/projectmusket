@@ -4,13 +4,2912 @@ version 2
 :: gfx/
 :: map/
 :: sfx/
+:: src/
 :: main.lua
 --[[pod_format="raw",created="2026-02-15 17:25:45",modified="2026-05-13 02:38:16",revision=274]]
 include("/mygame/src/main.lua")
+:: src/main.lua
+-- Picotron prototype: move + jump + aim/shoot + recoil + slide + shrine + dash(invuln + afterimage)
+-- Player ammo uses single-shot guns that switch automatically after firing.
+-- Gem score system with collection shards and off-screen indicator.
+-- Melee combo prototype included.
+-- English-only comments.
+
+local M = math
+
+local SCR = {
+  W = 480,
+  H = 270
+}
+
+local WORLD = {
+  HALF = 1000 / 2,
+  GROUND_Y = 200
+}
+
+local PLAYER_CFG = {
+  SIZE          = 32,
+  MAX_HP        = 3,
+  HIT_INVULN_FR = 120,
+  BLINK_FR      = 4,
+  HP_DOT_R      = 2,
+  HP_DOT_GAP    = 2,
+  HP_DOT_Y      = 18,
+  HURTBOX_W     = 9,
+  HURTBOX_H     = 22,
+  HURTBOX_OX    = 0,
+  HURTBOX_OY    = 3,
+  DRAW_HURTBOX  = true
+}
+
+local MOVE = {
+  ACC      = 0.28,
+  FRIC     = 0.78,
+  MAX_VX   = 3.6,
+  GRAV     = 0.28,
+  MAX_FALL = 6.0,
+  JUMP_V   = 5.8
+}
+
+local CAM = {
+  DAMP     = 0.15,
+  AIM_LOOK = 90,
+  AIM_DAMP = 0.12
+}
+
+local SHOT = {
+  FX_FR          = M.floor(0.1 * 60),
+  MUZZLE_FLASH_R = 28,
+  RECOIL_VX      = 1.6,
+  PUSH_RADIUS    = 50,
+  PUSH_SMOKE_V   = 5,
+  PUSH_TAIL_VX   = 5,
+  PUSH_TAIL_VY   = 5
+}
+
+local SHOT_SMOKE = {
+  LIFE_FR   = 120,
+  COUNT_MIN = 3,
+  COUNT_MAX = 5,
+  DRAG      = 0.96,
+  BASE_VX   = 0.18,
+  BASE_VY   = 0.04,
+  JITTER_X  = 0.35,
+  JITTER_Y  = 0.22,
+  R_MIN     = 3,
+  R_MAX     = 6
+}
+
+local TRAIL_SMOKE = {
+  LIFE_FR   = 45,
+  COUNT_MIN = 2,
+  COUNT_MAX = 3,
+  ATTACH_FR = 12,
+  DRAG      = 0.92,
+  BASE_VX   = 0.35,
+  BASE_VY   = 0.03,
+  JITTER_X  = 0.28,
+  JITTER_Y  = 0.18,
+  OFFSET_X  = 0,
+  OFFSET_Y  = 0,
+  R_MIN     = 2,
+  R_MAX     = 4
+}
+
+local BULLET = {
+  SPEED    = 30.0,
+  PAD      = 500,
+  OFFSET_X = 18,
+  OFFSET_Y = -4
+}
+
+local SHAKE = {
+  FR_ON_SHOT  = 10,
+  MAG_ON_SHOT = 3
+}
+
+local SPR = {
+  IDLE      = 1,
+  AIM       = 2,
+  JUMP      = 3,
+
+  MELEE1_A  = 4,
+  MELEE1_B  = 5,
+
+  SLIDE     = 7,
+
+  MELEE2_A  = 12,
+  MELEE2_B  = 13,
+
+  MELEE3_A  = 20,
+  MELEE3_B  = 21,
+
+  UI_ARROW  = 8,
+  SHRINE    = 64
+}
+
+local SHRINE = {
+  W               = 64,
+  H               = 64,
+  VIS_OX          = 0,
+  VIS_OY          = 0,
+  MAX_HP          = 5,
+
+  PRODUCE_FR      = 600,
+  GUN_MAX         = 5,
+  GUN_R           = 3,
+  GUN_GAP         = 3,
+  GUN_Y           = 18,
+  BAR_W           = 38,
+  BAR_H           = 4,
+  BAR_Y           = 9,
+  HEART_Y         = 28,
+  HEART_GAP       = 4,
+  HEART_W         = 8,
+  HEART_H         = 7,
+  SHOCKWAVE_DIAMETER = 180,
+  SHOCKWAVE_FR    = 18,
+  ALERT_FR        = 18,
+  ALERT_BORDER    = 5
+}
+
+local SLIDE = {
+  EPS      = 0.12,
+  MIN_PEAK = 3.6
+}
+
+local DASH = {
+  FR                    = M.floor(0.18 * 60),
+  SPEED                 = 7.2,
+  BURST_FR              = 3,
+  BURST_SPEED           = 8.8,
+  END_BOOST             = 0.72,
+  INVULN_AFTER          = M.floor(0.3 * 60),
+
+  AFTERIMG_SPAWN_EVERY  = 2,
+  AFTERIMG_LIFE         = 10,
+
+  CHARGE_MAX            = 2,
+  RECOVER_FR            = 60,
+  BAR_FLASH_FR          = 6,
+  BAR_EMPTY_SHAKE_FR    = 10,
+  BAR_EMPTY_FLASH_FR    = 10,
+
+  BAR_W                 = 10,
+  BAR_H                 = 3,
+  BAR_GAP               = 2,
+  BAR_Y                 = 6
+}
+
+local GUN = {
+  MAX             = 3,
+  SWITCH_FR       = 60,
+  FLASH_FR        = 6,
+  R               = PLAYER_CFG.HP_DOT_R,
+  GAP             = 3,
+  Y               = 9,
+  EMPTY_SHAKE_FR  = 10,
+  EMPTY_FLASH_FR  = 10
+}
+
+local DROP_GUN = {
+  W     = 30,
+  COLOR = 4,
+  GRAV  = 0.22,
+  SPIN  = 0.08,
+  LIFE_FR = 45
+}
+
+local MONSTER = {
+  W               = 20,
+  H               = 20,
+  MAX             = 20,
+  HP              = 10,
+  SPEED           = 1.05,
+  GRAV            = 0.24,
+  MAX_FALL        = 5.2,
+  JUMP_V          = 5.1,
+  SPEED_RAND_MIN  = 0.75,
+  SPEED_RAND_MAX  = 1.35,
+  JUMP_RAND_MIN   = 0.82,
+  JUMP_RAND_MAX   = 1.22,
+  SPAWN_MIN_FR    = 60,
+  SPAWN_MAX_FR    = 180,
+  HOP_MIN_FR      = 30,
+  HOP_MAX_FR      = 120,
+  EDGE_MARGIN     = 12,
+  COLOR           = 8,
+  HITSTOP_FR      = 2,
+  HIT_FLASH_FR    = 6,
+  KILL_HITSTOP_FR = 4,
+  KILL_SHAKE_FR   = 7,
+  KILL_SHAKE_MAG  = 3,
+  MELEE_KB_VX     = 2.4,
+  MELEE_KB_VY     = 2.0
+}
+
+local MONSTER_GIB = {
+  COUNT   = 16,
+  LIFE_FR = 32,
+  GRAV    = 0.18,
+  SIZE    = 3
+}
+
+local SOUL = {
+  COUNT_MIN    = 10,
+  COUNT_MAX    = 20,
+  FLOAT_FR     = 30,
+  GRAV         = 0.8,
+  DRAG         = 0.96,
+  GROUND_DRAG  = 0.82,
+  BOUNCE_VY    = 2,
+  SPARK_FR     = 10,
+  ABSORB_ACCEL = 0.32,
+  ABSORB_MIN_V = 1.4,
+  ABSORB_MAX_V = 6.0,
+  COLLECT_DIST = 8,
+  COLOR        = 12,
+  SPARK_COLOR  = 7
+}
+
+local UPGRADE = {
+  GOAL_STEP = 500,
+  PANEL_W   = 300,
+  PANEL_H   = 132,
+  SLOT_W    = 126,
+  SLOT_H    = 72
+}
+
+local MODAL = {
+  SLOW_FR    = 60,
+  STEP_EVERY = 4,
+  OVERLAY_COL = 1,
+  OVERLAY_STEP = 2,
+  UPGRADE_TEXT = "UPGRADE!",
+  UPGRADE_TEXT_COL = 10,
+  UPGRADE_SUBTEXT = "choose your reward",
+  UPGRADE_SUBTEXT_COL = 7
+}
+
+local MELEE_HITBOX = {
+  W  = 30,
+  H  = 20,
+  OX = 4,
+  OY = 6
+}
+
+local GEM = {
+  R                         = 6,
+  Y                         = WORLD.GROUND_Y - 10,
+  EDGE_MARGIN               = 120,
+  SHRINE_SAFE_MARGIN        = 140,
+  COLOR                     = 11,
+  HIGHLIGHT                 = 7,
+
+  SHARD_COUNT               = 8,
+  SHARD_BURST_FR            = 8,
+  SHARD_ABSORB_SPEED        = 0.22,
+  SHARD_ABSORB_MIN_SPEED    = 2.8,
+  SHARD_ABSORB_PLAYER_VX_FOLLOW = 1.0,
+  SHARD_ABSORB_PLAYER_VY_FOLLOW = 0.6,
+  SHARD_COLLECT_DIST        = 10,
+
+  COLLECT_SHAKE_FR          = 8,
+  COLLECT_SHAKE_MAG         = 4
+}
+
+local UI = {
+  ARROW_Y            = 8,
+  ARROW_MARGIN       = 6,
+  ARROW_W            = 32,
+
+  SCORE_Y            = 8,
+  SCORE_STACK_GAP    = 34,
+  SCORE_DIGIT_SPACING = 8,
+  SCORE_SCALE        = 3,
+  SOUL_SCORE_SCALE   = 1.5,
+  SOUL_SCORE_DIGIT_SPACING = 4
+}
+
+local CHEAT = {
+  SOUL_SEQ = { 0, 2, 1, 3, 4, 5 },
+  SOUL_BONUS = 500
+}
+
+local TOUCH_UI = {
+  ENABLED   = false,
+  DPAD_CX   = 72,
+  DPAD_CY   = 222,
+  DPAD_STEP = 28,
+  DPAD_R    = 18,
+  ATTACK_X  = 392,
+  ACTION_Y  = 222,
+  ACTION_R  = 20,
+  DASH_X    = 442,
+  DASH_Y    = 222,
+  DASH_R    = 20,
+  LABEL_OX  = 3,
+  LABEL_OY  = 4,
+  OUTLINE   = 7,
+  FILL_IDLE = 1,
+  FILL_ON   = 2,
+  TEXT_IDLE = 6,
+  TEXT_ON   = 7
+}
+
+local MELEE = {
+  COMBO_MAX   = 3,
+  A_FR        = M.floor(0.05 * 60),
+
+  CHAIN_FR_1  = M.floor(0.3  * 60),
+  CHAIN_FR_2  = M.floor(0.30 * 60),
+  CHAIN_FR_3  = M.floor(0.40 * 60),
+
+  DMG_1       = 2,
+  DMG_2       = 5,
+  DMG_3       = 10,
+  LUNGE_DIST_1 = 5,
+  LUNGE_DIST_2 = 9,
+  LUNGE_DIST_3 = 14,
+  LUNGE_STEP  = 2,
+  MOVE_LUNGE_SCALE = 0.45,
+  MOVE_VX_DAMP     = 0.35,
+  FRIC             = 0.72,
+  KB_1_VX          = 1.2,
+  KB_1_VY          = 0.8,
+  KB_2_VX          = 2.0,
+  KB_2_VY          = 1.4,
+  KB_3_VX          = 3.2,
+  KB_3_VY          = 2.4,
+  SHAKE_1_FR       = 4,
+  SHAKE_1_MAG      = 1,
+  SHAKE_2_FR       = 5,
+  SHAKE_2_MAG      = 2,
+  SHAKE_3_FR       = 7,
+  SHAKE_3_MAG      = 3
+}
+
+local TAIL = {
+  ROOT_OX     = 0,
+  ROOT_OY     = 4,
+  SEG_COUNT   = 3,
+  SEG_LEN     = 6,
+  GRAV        = 0.4,
+  DRAG        = 0.2,
+  ROOT_PULL   = 0.65,
+  MID_PULL    = 0.48,
+  TIP_PULL    = 0.21,
+  FOLLOW_X    = 0.65,
+  COLOR_MAIN  = 9,
+  COLOR_TIP   = 10
+}
+
+local player = {
+  x = 0, y = 0,
+  w = PLAYER_CFG.SIZE, h = PLAYER_CFG.SIZE,
+  vx = 0, vy = 0,
+  on_ground = false,
+  aim = false,
+  facing = 1,
+  dash_t   = 0,
+  invuln_t = 0
+}
+
+local camx = 0.0
+local cam_aim_x = 0.0
+local last_cam_draw_x = 0
+local last_cam_draw_y = 0
+
+local blackout_t = 0
+local flash_t    = 0
+local shake_t    = 0
+local shake_mag  = 0
+
+local bullets = {}
+local shot_smokes = {}
+local trail_smokes = {}
+local tail_nodes = {}
+local monsters = {}
+local monster_gibs = {}
+local souls = {}
+local soul_sparks = {}
+local monster_spawn_t = { l = 0, r = 0 }
+local hitstop_t = 0
+
+local last_mx       = 0
+local peak_vx       = 0.0
+local had_run_input = false
+
+local afterimgs    = {}
+local afterimg_tick = 0
+
+local dash_charges         = DASH.CHARGE_MAX
+local dash_recover_t       = 0
+local dash_bar_flash_t     = 0
+local dash_bar_flash_idx   = 0
+local dash_bar_empty_shake_t = 0
+local dash_bar_empty_flash_t = 0
+
+local player_guns            = GUN.MAX
+local gun_switch_t           = 0
+local player_gun_flash_t     = 0
+local player_gun_empty_shake_t = 0
+local player_gun_empty_flash_t = 0
+local dropped_guns           = {}
+
+local shrine_guns    = SHRINE.GUN_MAX
+local shrine_prod_t  = 0
+local shrine_hp      = SHRINE.MAX_HP
+local shrine_alert_t = 0
+local shrine_wave_t  = 0
+local shrine_wave_r  = 0
+local game_over      = false
+local game_over_msg  = "shrine fell"
+local player_hp      = PLAYER_CFG.MAX_HP
+local gem            = { active = false, x = 0, y = GEM.Y }
+local gem_shards     = {}
+local gems_collected = 0
+local souls_collected = 0
+local first_gem_spawn = true
+local next_upgrade_goal = UPGRADE.GOAL_STEP
+local upgrade_popup = false
+local upgrade_sel = 1
+local upgrade_options = {}
+local touch_ui = {
+  btn = {},
+  prev = {},
+  buttons = {},
+  mx = 0,
+  my = 0,
+  down = false
+}
+local modal = {
+  delay_t = 0,
+  kind = nil,
+  popup_input_armed = false,
+  run_ended = false
+}
+local popup_btn_prev = {
+  left = false,
+  right = false,
+  confirm = false
+}
+local upgrade_levels = {
+  fire_rate     = 0,
+  dash_count    = 0,
+  melee_range   = 0,
+  max_hp        = 0,
+  mag_size      = 0,
+  shrine_reload = 0
+}
+local cheat_soul_idx = 1
+
+local melee_combo      = 0
+local melee_anim_t     = 0
+local melee_chain_t    = 0
+local melee_hit_done   = false
+-- FIX: declared at file scope (was implicit global before)
+local melee_lunge_left = 0
+
+local UPGRADE_DEFS = {
+  {
+    id = "fire_rate",
+    title = "character",
+    subtitle = "fire interval down",
+    levels = { 0.20, 0.50, 1.00 }
+  },
+  {
+    id = "dash_count",
+    title = "character",
+    subtitle = "dash count up",
+    levels = { 1, 2, 3 }
+  },
+  {
+    id = "melee_range",
+    title = "character",
+    subtitle = "melee range up",
+    levels = { 0.10, 0.20, 0.50 }
+  },
+  {
+    id = "max_hp",
+    title = "character",
+    subtitle = "max hp up",
+    levels = { 1, 2, 3 }
+  },
+  {
+    id = "mag_size",
+    title = "character",
+    subtitle = "ammo capacity up",
+    levels = { 1, 2 }
+  },
+  {
+    id = "shrine_reload",
+    title = "shrine",
+    subtitle = "reload speed up",
+    levels = { 0.20, 0.50, 1.00 }
+  }
+}
+
+-- Utility
+
+function clamp(x, a, b)
+  if x < a then return a end
+  if x > b then return b end
+  return x
+end
+
+function sgn(x)
+  if x < 0 then return -1 end
+  if x > 0 then return  1 end
+  return 0
+end
+
+function dec_timer(t)
+  if t > 0 then return t - 1 end
+  return 0
+end
+
+function aabb_overlap(ax, ay, aw, ah, bx, by, bw, bh)
+  return (
+    ax < bx + bw and
+    ax + aw > bx and
+    ay < by + bh and
+    ay + ah > by
+  )
+end
+
+function rect_visible(x, y, w, h, rx, ry, rw, rh)
+  return aabb_overlap(x, y, w, h, rx, ry, rw, rh)
+end
+
+function start_shake(fr, mag)
+  if fr  > shake_t   then shake_t   = fr  end
+  if mag > shake_mag then shake_mag = mag end
+end
+
+function get_move_input()
+  local mx = 0
+  if ibtn(0) then mx -= 1 end
+  if ibtn(1) then mx += 1 end
+  return mx
+end
+
+function get_shrine_pos()
+  return -SHRINE.W / 2 + SHRINE.VIS_OX,
+         WORLD.GROUND_Y - SHRINE.H + SHRINE.VIS_OY
+end
+
+function rand_fr(min_fr, max_fr)
+  return min_fr + M.floor(rnd(max_fr - min_fr + 1))
+end
+
+function rnd_between(min_v, max_v)
+  return min_v + rnd(max_v - min_v)
+end
+
+function start_hitstop(fr)
+  if fr > hitstop_t then hitstop_t = fr end
+end
+
+function get_shrine_center()
+  local shrine_x, shrine_y = get_shrine_pos()
+  return shrine_x + SHRINE.W / 2,
+         shrine_y + SHRINE.H / 2
+end
+
+function get_player_hurtbox()
+  local x = player.x + M.floor((player.w - PLAYER_CFG.HURTBOX_W) * 0.5) + PLAYER_CFG.HURTBOX_OX
+
+  return x,
+         player.y + PLAYER_CFG.HURTBOX_OY,
+         PLAYER_CFG.HURTBOX_W,
+         PLAYER_CFG.HURTBOX_H
+end
+
+function faster_time(base, bonus)
+  return M.max(1, M.floor(base / (1 + bonus) + 0.5))
+end
+
+function get_upgrade_level(id)
+  return upgrade_levels[id] or 0
+end
+
+function get_upgrade_def(id)
+  for d in all(UPGRADE_DEFS) do
+    if d.id == id then return d end
+  end
+  return nil
+end
+
+function is_upgrade_maxed(id)
+  local def = get_upgrade_def(id)
+  return def and get_upgrade_level(id) >= #def.levels
+end
+
+function get_player_max_hp()
+  return PLAYER_CFG.MAX_HP + (get_upgrade_def("max_hp").levels[get_upgrade_level("max_hp")] or 0)
+end
+
+function get_dash_charge_max()
+  return DASH.CHARGE_MAX + (get_upgrade_def("dash_count").levels[get_upgrade_level("dash_count")] or 0)
+end
+
+function get_gun_max()
+  return GUN.MAX + (get_upgrade_def("mag_size").levels[get_upgrade_level("mag_size")] or 0)
+end
+
+function get_gun_switch_fr()
+  local bonus = get_upgrade_def("fire_rate").levels[get_upgrade_level("fire_rate")] or 0
+  return faster_time(GUN.SWITCH_FR, bonus)
+end
+
+function get_shrine_produce_fr()
+  local bonus = get_upgrade_def("shrine_reload").levels[get_upgrade_level("shrine_reload")] or 0
+  return faster_time(SHRINE.PRODUCE_FR, bonus)
+end
+
+function get_melee_range_mult()
+  return 1 + (get_upgrade_def("melee_range").levels[get_upgrade_level("melee_range")] or 0)
+end
+
+function get_upgrade_value_text(id, level)
+  local def = get_upgrade_def(id)
+  if not def then return "" end
+  local value = def.levels[level]
+  if id == "fire_rate" or id == "shrine_reload" or id == "melee_range" then
+    return "lv" .. level .. "  +" .. M.floor(value * 100) .. "%"
+  end
+  return "lv" .. level .. "  +" .. value
+end
+
+function clamp_runtime_to_caps()
+  player_hp = clamp(player_hp, 0, get_player_max_hp())
+  player_guns = clamp(player_guns, 0, get_gun_max())
+  dash_charges = clamp(dash_charges, 0, get_dash_charge_max())
+end
+
+function init_touch_ui()
+  touch_ui.buttons = {
+    { id = 2, x = TOUCH_UI.DPAD_CX,                    y = TOUCH_UI.DPAD_CY - TOUCH_UI.DPAD_STEP, r = TOUCH_UI.DPAD_R,   label = "^" },
+    { id = 0, x = TOUCH_UI.DPAD_CX - TOUCH_UI.DPAD_STEP, y = TOUCH_UI.DPAD_CY,                    r = TOUCH_UI.DPAD_R,   label = "<" },
+    { id = 3, x = TOUCH_UI.DPAD_CX,                    y = TOUCH_UI.DPAD_CY + TOUCH_UI.DPAD_STEP, r = TOUCH_UI.DPAD_R,   label = "v" },
+    { id = 1, x = TOUCH_UI.DPAD_CX + TOUCH_UI.DPAD_STEP, y = TOUCH_UI.DPAD_CY,                    r = TOUCH_UI.DPAD_R,   label = ">" },
+    { id = 4, x = TOUCH_UI.ATTACK_X,                  y = TOUCH_UI.ACTION_Y,                      r = TOUCH_UI.ACTION_R, label = "z" },
+    { id = 5, x = TOUCH_UI.DASH_X,                    y = TOUCH_UI.DASH_Y,                        r = TOUCH_UI.DASH_R,   label = "x" }
+  }
+
+  for i = 0, 5 do
+    touch_ui.btn[i] = false
+    touch_ui.prev[i] = false
+  end
+
+  touch_ui.mx = 0
+  touch_ui.my = 0
+  touch_ui.down = false
+end
+
+function touch_hit(mx, my, b)
+  local dx = mx - b.x
+  local dy = my - b.y
+  return dx * dx + dy * dy <= b.r * b.r
+end
+
+function update_touch_ui()
+  for i = 0, 5 do
+    touch_ui.prev[i] = touch_ui.btn[i]
+    touch_ui.btn[i] = false
+  end
+
+  if not TOUCH_UI.ENABLED then return end
+  if not touch_ui.down then return end
+
+  for b in all(touch_ui.buttons) do
+    if touch_hit(touch_ui.mx, touch_ui.my, b) then
+      touch_ui.btn[b.id] = true
+    end
+  end
+end
+
+on_event("click", function(msg)
+  touch_ui.mx = msg.mx
+  touch_ui.my = msg.my
+  touch_ui.down = true
+end)
+
+on_event("drag", function(msg)
+  touch_ui.mx = msg.mx
+  touch_ui.my = msg.my
+  touch_ui.down = true
+end)
+
+on_event("release", function(msg)
+  touch_ui.mx = msg.mx
+  touch_ui.my = msg.my
+  touch_ui.down = false
+end)
+
+on_event("hover", function(msg)
+  if touch_ui.down then return end
+  touch_ui.mx = msg.mx
+  touch_ui.my = msg.my
+end)
+
+function ibtn(i)
+  return ((btn(i) and true) or false) or touch_ui.btn[i]
+end
+
+function ibtnp(i)
+  return btnp(i) or (touch_ui.btn[i] and not touch_ui.prev[i])
+end
+
+function are_popup_buttons_released()
+  for i = 0, 5 do
+    if ibtn(i) then return false end
+  end
+  return true
+end
+
+function arm_popup_input_if_ready()
+  if modal.popup_input_armed then return true end
+  if are_popup_buttons_released() then
+    modal.popup_input_armed = true
+  end
+  return modal.popup_input_armed
+end
+
+function start_modal_delay(kind)
+  if modal.delay_t > 0 or game_over or upgrade_popup then return false end
+  modal.kind = kind
+  modal.delay_t = MODAL.SLOW_FR
+  modal.popup_input_armed = false
+  return true
+end
+
+function finish_modal_delay()
+  if modal.kind == "upgrade" then
+    upgrade_popup = true
+  elseif modal.kind == "game_over" then
+    game_over = true
+  end
+
+  modal.delay_t = 0
+  modal.kind = nil
+  modal.popup_input_armed = false
+end
+
+function update_modal_delay()
+  if modal.delay_t <= 0 then return false end
+
+  modal.delay_t -= 1
+  if modal.delay_t <= 0 then
+    finish_modal_delay()
+  end
+
+  return (modal.delay_t % MODAL.STEP_EVERY) ~= 0
+end
+
+function build_upgrade_options()
+  local pool = {}
+
+  for d in all(UPGRADE_DEFS) do
+    local next_level = get_upgrade_level(d.id) + 1
+    if next_level <= #d.levels then
+      add(pool, {
+        id = d.id,
+        title = d.title,
+        subtitle = d.subtitle,
+        level = next_level,
+        value_text = get_upgrade_value_text(d.id, next_level)
+      })
+    end
+  end
+
+  upgrade_options = {}
+  while #upgrade_options < 2 and #pool > 0 do
+    local pick = 1 + flr(rnd(#pool))
+    add(upgrade_options, pool[pick])
+    deli(pool, pick)
+  end
+end
+
+function maybe_open_upgrade_popup()
+  if modal.run_ended or upgrade_popup or modal.delay_t > 0 then return end
+  if souls_collected < next_upgrade_goal then return end
+
+  build_upgrade_options()
+  if #upgrade_options <= 0 then return end
+
+  upgrade_sel = 1
+  player_hp = get_player_max_hp()
+  start_modal_delay("upgrade")
+end
+
+function award_test_souls()
+  souls_collected += CHEAT.SOUL_BONUS
+end
+
+function update_test_cheats()
+  for _, btn_id in ipairs(CHEAT.SOUL_SEQ) do
+    if ibtnp(btn_id) then
+      local expected = CHEAT.SOUL_SEQ[cheat_soul_idx]
+      if btn_id == expected then
+        cheat_soul_idx += 1
+        if cheat_soul_idx > #CHEAT.SOUL_SEQ then
+          cheat_soul_idx = 1
+          award_test_souls()
+        end
+      else
+        if btn_id == CHEAT.SOUL_SEQ[1] then
+          cheat_soul_idx = 2
+        else
+          cheat_soul_idx = 1
+        end
+      end
+      return
+    end
+  end
+end
+
+function apply_upgrade_choice(opt)
+  if not opt then return end
+
+  upgrade_levels[opt.id] = opt.level
+
+  if opt.id == "max_hp" then
+    player_hp = get_player_max_hp()
+  elseif opt.id == "dash_count" then
+    dash_charges = get_dash_charge_max()
+  elseif opt.id == "mag_size" then
+    player_guns = get_gun_max()
+  elseif opt.id == "shrine_reload" then
+    shrine_prod_t = M.min(shrine_prod_t, get_shrine_produce_fr())
+  end
+
+  clamp_runtime_to_caps()
+  upgrade_popup = false
+  upgrade_options = {}
+  modal.popup_input_armed = false
+  popup_btn_prev.left = false
+  popup_btn_prev.right = false
+  popup_btn_prev.confirm = false
+  next_upgrade_goal += UPGRADE.GOAL_STEP
+  maybe_open_upgrade_popup()
+end
+
+function update_upgrade_popup()
+  if not upgrade_popup then return end
+  if not arm_popup_input_if_ready() then return end
+
+  local left_down = ibtn(0)
+  local right_down = ibtn(1)
+  local confirm_down = ibtn(4)
+
+  local left_pressed = left_down and not popup_btn_prev.left
+  local right_pressed = right_down and not popup_btn_prev.right
+  local confirm_pressed = confirm_down and not popup_btn_prev.confirm
+
+  if #upgrade_options > 1 then
+    if left_pressed then upgrade_sel = M.max(1, upgrade_sel - 1) end
+    if right_pressed then upgrade_sel = M.min(#upgrade_options, upgrade_sel + 1) end
+  end
+
+  if confirm_pressed then
+    apply_upgrade_choice(upgrade_options[upgrade_sel])
+  end
+
+  popup_btn_prev.left = left_down
+  popup_btn_prev.right = right_down
+  popup_btn_prev.confirm = confirm_down
+end
+
+-- Dash helpers
+
+function get_dash_speed()
+  if player.dash_t > (DASH.FR - DASH.BURST_FR) then
+    return DASH.BURST_SPEED
+  end
+  return DASH.SPEED
+end
+
+function start_dash_recovery_if_needed()
+  if dash_charges < get_dash_charge_max() and dash_recover_t <= 0 then
+    dash_recover_t = DASH.RECOVER_FR
+  end
+end
+
+function spend_dash_charge()
+  if dash_charges <= 0 then return false end
+  dash_charges -= 1
+  start_dash_recovery_if_needed()
+  return true
+end
+
+function trigger_empty_dash_feedback()
+  dash_bar_empty_shake_t = DASH.BAR_EMPTY_SHAKE_FR
+  dash_bar_empty_flash_t = DASH.BAR_EMPTY_FLASH_FR
+end
+
+function trigger_empty_gun_feedback()
+  player_gun_empty_shake_t = GUN.EMPTY_SHAKE_FR
+  player_gun_empty_flash_t = GUN.EMPTY_FLASH_FR
+end
+
+function update_dash_recovery()
+  if dash_recover_t > 0 then
+    dash_recover_t -= 1
+    if dash_recover_t <= 0 then
+      if dash_charges < get_dash_charge_max() then
+        dash_charges      += 1
+        dash_bar_flash_t   = DASH.BAR_FLASH_FR
+        dash_bar_flash_idx = dash_charges
+      end
+      start_dash_recovery_if_needed()
+    end
+  end
+
+  if dash_bar_flash_t > 0 then
+    dash_bar_flash_t -= 1
+    if dash_bar_flash_t <= 0 then
+      dash_bar_flash_idx = 0
+    end
+  end
+
+  dash_bar_empty_shake_t = dec_timer(dash_bar_empty_shake_t)
+  dash_bar_empty_flash_t = dec_timer(dash_bar_empty_flash_t)
+end
+
+function get_dash_visual_fill()
+  local fill = dash_charges
+  if dash_charges < get_dash_charge_max() and dash_recover_t > 0 then
+    local progress = 1 - (dash_recover_t / DASH.RECOVER_FR)
+    fill += clamp(progress, 0, 1)
+  end
+  return clamp(fill, 0, get_dash_charge_max())
+end
+
+-- Shrine helpers
+
+function update_shrine_production()
+  if shrine_guns < SHRINE.GUN_MAX then
+    shrine_prod_t += 1
+    if shrine_prod_t >= get_shrine_produce_fr() then
+      shrine_prod_t = 0
+      shrine_guns  += 1
+    end
+  else
+    shrine_prod_t = get_shrine_produce_fr()
+  end
+end
+
+function trigger_shrine_wave()
+  shrine_alert_t = SHRINE.ALERT_FR
+  shrine_wave_t  = SHRINE.SHOCKWAVE_FR
+  shrine_wave_r  = 0
+  start_shake(SHRINE.ALERT_FR, 6)
+end
+
+function damage_shrine()
+  if shrine_hp <= 0 or modal.run_ended then return end
+
+  shrine_hp -= 1
+  trigger_shrine_wave()
+
+  if shrine_hp <= 0 then
+    shrine_hp = 0
+    game_over_msg = "shrine fell"
+    modal.run_ended = true
+    start_modal_delay("game_over")
+  end
+end
+
+function damage_player()
+  if player_hp <= 0 or player.invuln_t > 0 or modal.run_ended then return end
+
+  player_hp -= 1
+  player.invuln_t = PLAYER_CFG.HIT_INVULN_FR
+  start_shake(8, 4)
+
+  if player_hp <= 0 then
+    player_hp = 0
+    game_over_msg = "hero fell"
+    modal.run_ended = true
+    start_modal_delay("game_over")
+  end
+end
+
+function update_shrine_wave()
+  shrine_alert_t = dec_timer(shrine_alert_t)
+
+  if shrine_wave_t <= 0 then
+    shrine_wave_r = 0
+    return
+  end
+
+  local progress = 1 - (shrine_wave_t / SHRINE.SHOCKWAVE_FR)
+  shrine_wave_r = (SHRINE.SHOCKWAVE_DIAMETER * 0.5) * clamp(progress, 0, 1)
+  shrine_wave_t -= 1
+
+  local sx, sy = get_shrine_center()
+  for i = #monsters, 1, -1 do
+    local m = monsters[i]
+    local dx = (m.x + m.w / 2) - sx
+    local dy = (m.y + m.h / 2) - sy
+    local dist = M.sqrt(dx * dx + dy * dy)
+    local reach = shrine_wave_r + M.max(m.w, m.h) * 0.5
+    if dist <= reach then
+      damage_monster(i, MONSTER.HP, true)
+    end
+  end
+end
+
+function try_refill_from_shrine()
+  if shrine_guns <= 0           then return end
+  if player_guns >= get_gun_max() then return end
+
+  local need     = get_gun_max() - player_guns
+  local transfer = M.min(need, shrine_guns)
+  if transfer <= 0 then return end
+
+  player_guns  += transfer
+  shrine_guns  -= transfer
+  player_gun_flash_t = GUN.FLASH_FR
+
+  if shrine_guns >= SHRINE.GUN_MAX then
+    shrine_prod_t = get_shrine_produce_fr()
+  elseif shrine_prod_t >= get_shrine_produce_fr() then
+    shrine_prod_t = 0
+  end
+end
+
+-- Gem helpers
+
+function spawn_gem()
+  gem.active = true
+  gem.y      = GEM.Y
+
+  local min_x = -WORLD.HALF + GEM.EDGE_MARGIN
+  local max_x =  WORLD.HALF - GEM.EDGE_MARGIN
+
+  if first_gem_spawn then
+    local shrine_block_l = -GEM.SHRINE_SAFE_MARGIN
+    local shrine_block_r =  GEM.SHRINE_SAFE_MARGIN
+
+    local left_len  = shrine_block_l - min_x
+    local right_len = max_x - shrine_block_r
+    local total_len = left_len + right_len
+
+    if total_len <= 0 then
+      gem.x = 0
+    else
+      local pick = rnd(total_len)
+      if pick < left_len then
+        gem.x = M.floor(min_x + pick)
+      else
+        gem.x = M.floor(shrine_block_r + (pick - left_len))
+      end
+    end
+
+    first_gem_spawn = false
+  else
+    gem.x = M.floor(rnd(max_x - min_x)) + min_x
+  end
+end
+
+function spawn_gem_shards(x, y)
+  for i = 1, GEM.SHARD_COUNT do
+    local ang = rnd(1)
+    local spd = 1.2 + rnd(1.8)
+    add(gem_shards, {
+      x   = x,
+      y   = y,
+      vx  = cos(ang) * spd,
+      vy  = sin(ang) * spd,
+      t   = GEM.SHARD_BURST_FR,
+      col = (i % 2 == 0) and GEM.COLOR or GEM.HIGHLIGHT
+    })
+  end
+end
+
+function collect_gem()
+  if not gem.active then return end
+  gem.active       = false
+  gems_collected  += 1
+  start_shake(GEM.COLLECT_SHAKE_FR, GEM.COLLECT_SHAKE_MAG)
+  spawn_gem_shards(gem.x, gem.y)
+  spawn_gem()
+end
+
+function update_gem_shards()
+  local px = player.x + player.w / 2
+  local py = player.y + player.h / 2
+
+  for i = #gem_shards, 1, -1 do
+    local s = gem_shards[i]
+
+    if s.t > 0 then
+      -- Burst phase: fly outward then decelerate
+      s.t  -= 1
+      s.x  += s.vx
+      s.y  += s.vy
+      s.vx *= 0.9
+      -- FIX: damp vy instead of overwriting it.
+      s.vy *= 0.9
+    else
+      -- Absorb phase: home toward player
+      local dx   = px - s.x
+      local dy   = py - s.y
+      local dist = M.sqrt(dx * dx + dy * dy)
+
+      if dist <= GEM.SHARD_COLLECT_DIST then
+        deli(gem_shards, i)
+      else
+        local pull = M.max(GEM.SHARD_ABSORB_MIN_SPEED, dist * GEM.SHARD_ABSORB_SPEED)
+
+        s.x += player.vx * GEM.SHARD_ABSORB_PLAYER_VX_FOLLOW
+        s.y += player.vy * GEM.SHARD_ABSORB_PLAYER_VY_FOLLOW
+
+        if pull >= dist then
+          deli(gem_shards, i)
+        else
+          s.x += dx / dist * pull
+          s.y += dy / dist * pull
+        end
+      end
+    end
+  end
+end
+
+-- Dropped gun helpers
+
+function spawn_dropped_gun()
+  local dir = player.facing
+  local px  = player.x + player.w / 2
+  local py  = player.y + player.h / 2 - 4
+
+  add(dropped_guns, {
+    x   = px + dir * 8,
+    y   = py,
+    vx  = dir * (1.2 + rnd(0.8)),
+    vy  = -1.6 - rnd(0.8),
+    ang = 0,
+    va  = dir * DROP_GUN.SPIN,
+    t   = DROP_GUN.LIFE_FR
+  })
+end
+
+function update_dropped_guns()
+  for i = #dropped_guns, 1, -1 do
+    local g = dropped_guns[i]
+    g.t  -= 1
+    g.vy += DROP_GUN.GRAV
+    g.x  += g.vx
+    g.y  += g.vy
+    g.ang += g.va
+
+    if g.t <= 0 or g.y > (WORLD.GROUND_Y + 80) then
+      deli(dropped_guns, i)
+    end
+  end
+end
+
+-- Monster helpers
+
+function reset_monster_spawn_timer(side)
+  local t = rand_fr(MONSTER.SPAWN_MIN_FR, MONSTER.SPAWN_MAX_FR)
+  if side < 0 then
+    monster_spawn_t.l = t
+  else
+    monster_spawn_t.r = t
+  end
+end
+
+function get_monster_hop_wait()
+  return rand_fr(MONSTER.HOP_MIN_FR, MONSTER.HOP_MAX_FR)
+end
+
+function get_monster_hop_speed()
+  return MONSTER.SPEED * rnd_between(MONSTER.SPEED_RAND_MIN, MONSTER.SPEED_RAND_MAX)
+end
+
+function get_monster_hop_jump_v()
+  return MONSTER.JUMP_V * rnd_between(MONSTER.JUMP_RAND_MIN, MONSTER.JUMP_RAND_MAX)
+end
+
+function spawn_monster(side)
+  if #monsters >= MONSTER.MAX then return end
+
+  local x = (side < 0)
+    and (-WORLD.HALF + MONSTER.EDGE_MARGIN)
+    or (WORLD.HALF - MONSTER.W - MONSTER.EDGE_MARGIN)
+
+  add(monsters, {
+    x         = x,
+    y         = WORLD.GROUND_Y - MONSTER.H,
+    w         = MONSTER.W,
+    h         = MONSTER.H,
+    vx        = 0,
+    vy        = 0,
+    hp        = MONSTER.HP,
+    hit_flash_t = 0,
+    on_ground = true,
+    hop_t     = get_monster_hop_wait(),
+    facing    = -side,
+    idle_t    = rnd(1)
+  })
+end
+
+function update_monster_spawner()
+  if #monsters >= MONSTER.MAX then
+    monster_spawn_t.l = 0
+    monster_spawn_t.r = 0
+    return
+  end
+
+  if monster_spawn_t.l <= 0 then
+    reset_monster_spawn_timer(-1)
+  end
+  if monster_spawn_t.r <= 0 then
+    reset_monster_spawn_timer(1)
+  end
+
+  monster_spawn_t.l -= 1
+  monster_spawn_t.r -= 1
+
+  if monster_spawn_t.l <= 0 then
+    spawn_monster(-1)
+    if #monsters < MONSTER.MAX then
+      reset_monster_spawn_timer(-1)
+    else
+      monster_spawn_t.l = 0
+    end
+  end
+
+  if monster_spawn_t.r <= 0 then
+    spawn_monster(1)
+    if #monsters < MONSTER.MAX then
+      reset_monster_spawn_timer(1)
+    else
+      monster_spawn_t.r = 0
+    end
+  end
+end
+
+function spawn_monster_gibs(x, y)
+  for i = 1, MONSTER_GIB.COUNT do
+    local ang = rnd(1)
+    local spd = 1.4 + rnd(3.6)
+    add(monster_gibs, {
+      x  = x,
+      y  = y,
+      vx = cos(ang) * spd,
+      vy = sin(ang) * spd - 1.2,
+      t  = MONSTER_GIB.LIFE_FR,
+      s  = 1 + (i % MONSTER_GIB.SIZE),
+      c  = (i % 4 == 0) and 8 or ((i % 3 == 0) and 7 or MONSTER.COLOR)
+    })
+  end
+end
+
+function spawn_souls(x, y)
+  local count = rand_fr(SOUL.COUNT_MIN, SOUL.COUNT_MAX)
+
+  for i = 1, count do
+    local ang = rnd(1)
+    local spd = 0.8 + rnd(2.2)
+    add(souls, {
+      x  = x,
+      y  = y,
+      vx = cos(ang) * spd,
+      vy = sin(ang) * spd - 0.8,
+      t  = SOUL.FLOAT_FR,
+      on_ground = false,
+      absorb_v  = SOUL.ABSORB_MIN_V
+    })
+  end
+end
+
+function spawn_soul_spark(x, y)
+  add(soul_sparks, {
+    x = x,
+    y = y,
+    t = SOUL.SPARK_FR
+  })
+end
+
+function kill_monster(i)
+  local m = monsters[i]
+  if not m then return end
+
+  spawn_monster_gibs(m.x + m.w / 2, m.y + m.h / 2)
+  spawn_souls(m.x + m.w / 2, m.y + m.h / 2)
+  start_hitstop(MONSTER.KILL_HITSTOP_FR)
+  start_shake(MONSTER.KILL_SHAKE_FR, MONSTER.KILL_SHAKE_MAG)
+  deli(monsters, i)
+end
+
+function damage_monster(i, dmg, instant_kill, kb_vx, kb_vy)
+  local m = monsters[i]
+  if not m then return false end
+
+  if instant_kill then
+    m.hp = 0
+  else
+    m.hp -= dmg
+  end
+
+  if m.hp <= 0 then
+    kill_monster(i)
+    return true
+  end
+
+  m.hit_flash_t = MONSTER.HIT_FLASH_FR
+  if kb_vx then
+    m.vx = kb_vx
+    m.vy = -(kb_vy or 0)
+    m.on_ground = false
+  end
+
+  start_hitstop(MONSTER.HITSTOP_FR)
+  return false
+end
+
+function update_monster_gibs()
+  for i = #monster_gibs, 1, -1 do
+    local g = monster_gibs[i]
+    g.t  -= 1
+    g.vy += MONSTER_GIB.GRAV
+    g.x  += g.vx
+    g.y  += g.vy
+    g.vx *= 0.97
+
+    if g.t <= 0 then
+      deli(monster_gibs, i)
+    end
+  end
+end
+
+function update_souls()
+  local px = player.x + player.w / 2
+  local py = player.y + player.h / 2
+  local gy = WORLD.GROUND_Y - 1
+
+  for i = #souls, 1, -1 do
+    local s = souls[i]
+
+    if s.t > 0 then
+      s.t -= 1
+      s.x += s.vx
+      s.y += s.vy
+      s.vx *= 0.97
+      s.vy *= 0.97
+    else
+      if not s.on_ground then
+        s.vy += SOUL.GRAV
+        s.x += s.vx
+        s.y += s.vy
+        s.vx *= SOUL.DRAG
+        s.vy *= SOUL.DRAG
+
+        if s.y >= gy then
+          s.y = gy
+          s.vy = -SOUL.BOUNCE_VY
+          s.vx *= SOUL.GROUND_DRAG
+          if M.abs(s.vy) < 0.35 then
+            s.vy = 0
+            s.on_ground = true
+          end
+          spawn_soul_spark(s.x, s.y)
+        end
+      else
+        s.x += s.vx
+        s.y = gy
+        s.vx *= SOUL.GROUND_DRAG
+      end
+
+      local dx = px - s.x
+      local dy = py - s.y
+      local dist = M.sqrt(dx * dx + dy * dy)
+
+      if dist <= SOUL.COLLECT_DIST then
+        souls_collected += 1
+        deli(souls, i)
+      else
+        local step = M.max(s.absorb_v, dist * 0.08)
+        if step >= dist then
+          souls_collected += 1
+          spawn_soul_spark(s.x, s.y)
+          deli(souls, i)
+        else
+          s.absorb_v = M.min(SOUL.ABSORB_MAX_V, s.absorb_v + SOUL.ABSORB_ACCEL)
+          s.x += dx / dist * step
+          s.y += dy / dist * step
+          s.on_ground = false
+        end
+      end
+    end
+  end
+end
+
+function update_soul_sparks()
+  for i = #soul_sparks, 1, -1 do
+    local s = soul_sparks[i]
+    s.t -= 1
+    if s.t <= 0 then
+      deli(soul_sparks, i)
+    end
+  end
+end
+
+function update_monsters()
+  local shrine_x, shrine_y = get_shrine_pos()
+  local target_x = shrine_x + SHRINE.W / 2
+  local px, py, pw, ph = get_player_hurtbox()
+
+  for i = #monsters, 1, -1 do
+    local m = monsters[i]
+    m.hit_flash_t = dec_timer(m.hit_flash_t)
+    m.idle_t += 0.08
+
+    if m.on_ground then
+      m.hop_t -= 1
+      if m.hop_t <= 0 then
+        local cx = m.x + m.w / 2
+        local dir = sgn(target_x - cx)
+        if dir ~= 0 then
+          m.facing = dir
+        end
+        m.vx = m.facing * get_monster_hop_speed()
+        m.vy = -get_monster_hop_jump_v()
+        m.on_ground = false
+        m.hop_t = get_monster_hop_wait()
+      end
+    end
+
+    if not m.on_ground then
+      m.vy = M.min(m.vy + MONSTER.GRAV, MONSTER.MAX_FALL)
+      m.x += m.vx
+      m.y += m.vy
+
+      local gy = WORLD.GROUND_Y - m.h
+      if m.y >= gy then
+        m.y = gy
+        m.vy = 0
+        m.vx = 0
+        m.on_ground = true
+      end
+    end
+
+    if aabb_overlap(m.x, m.y, m.w, m.h, shrine_x, shrine_y, SHRINE.W, SHRINE.H) then
+      damage_shrine()
+      kill_monster(i)
+    elseif aabb_overlap(m.x, m.y, m.w, m.h, px, py, pw, ph) then
+      damage_player()
+    end
+  end
+end
+
+function apply_bullet_hits(x0, x1, y)
+  local left = M.min(x0, x1) - 2
+  local width = M.abs(x1 - x0) + 4
+
+  for i = #monsters, 1, -1 do
+    local m = monsters[i]
+    if aabb_overlap(left, y - 1, width, 2, m.x, m.y, m.w, m.h) then
+      damage_monster(i, MONSTER.HP, true)
+    end
+  end
+end
+
+function get_melee_damage()
+  if melee_combo == 1 then return MELEE.DMG_1 end
+  if melee_combo == 2 then return MELEE.DMG_2 end
+  if melee_combo == 3 then return MELEE.DMG_3 end
+  return 0
+end
+
+function is_melee_hit_active()
+  if melee_combo <= 0 then return false end
+  return melee_anim_t == M.max(1, MELEE.A_FR - 1)
+end
+
+function get_melee_knockback()
+  if melee_combo == 1 then return MELEE.KB_1_VX, MELEE.KB_1_VY end
+  if melee_combo == 2 then return MELEE.KB_2_VX, MELEE.KB_2_VY end
+  if melee_combo == 3 then return MELEE.KB_3_VX, MELEE.KB_3_VY end
+  return 0, 0
+end
+
+function get_melee_hit_shake()
+  if melee_combo == 1 then return MELEE.SHAKE_1_FR, MELEE.SHAKE_1_MAG end
+  if melee_combo == 2 then return MELEE.SHAKE_2_FR, MELEE.SHAKE_2_MAG end
+  if melee_combo == 3 then return MELEE.SHAKE_3_FR, MELEE.SHAKE_3_MAG end
+  return 0, 0
+end
+
+function get_melee_hitbox()
+  local scale = 1
+  if melee_combo == 2 then
+    scale = 1.5
+  elseif melee_combo == 3 then
+    scale = 2
+  end
+  scale *= get_melee_range_mult()
+
+  local w = M.floor(MELEE_HITBOX.W * scale)
+  local h = M.floor(MELEE_HITBOX.H * scale)
+  local x = player.x + player.w / 2 + player.facing * MELEE_HITBOX.OX
+  if player.facing < 0 then
+    x -= w
+  end
+
+  return x,
+         player.y + MELEE_HITBOX.OY,
+         w,
+         h
+end
+
+function try_melee_hit_monsters()
+  if melee_hit_done or melee_combo <= 0 then return end
+  if not is_melee_hit_active() then return end
+
+  local hx, hy, hw, hh = get_melee_hitbox()
+  local dmg = get_melee_damage()
+  local kb_vx, kb_vy = get_melee_knockback()
+  local hit_any = false
+
+  for i = #monsters, 1, -1 do
+    local m = monsters[i]
+    if aabb_overlap(hx, hy, hw, hh, m.x, m.y, m.w, m.h) then
+      damage_monster(
+        i,
+        dmg,
+        false,
+        player.facing * kb_vx,
+        kb_vy
+      )
+      hit_any = true
+    end
+  end
+
+  if hit_any then
+    local fr, mag = get_melee_hit_shake()
+    start_shake(fr, mag)
+    melee_hit_done = true
+  end
+end
+
+-- Melee helpers
+
+function is_melee_active()
+  return melee_combo > 0 and melee_chain_t > 0
+end
+
+function get_melee_lunge_dist(combo)
+  if combo == 1 then return MELEE.LUNGE_DIST_1 end
+  if combo == 2 then return MELEE.LUNGE_DIST_2 end
+  if combo == 3 then return MELEE.LUNGE_DIST_3 end
+  return 0
+end
+
+function get_melee_chain_fr(combo)
+  if combo == 1 then return MELEE.CHAIN_FR_1 end
+  if combo == 2 then return MELEE.CHAIN_FR_2 end
+  if combo == 3 then return MELEE.CHAIN_FR_3 end
+  return MELEE.CHAIN_FR_1
+end
+
+function clear_melee_state()
+  melee_combo      = 0
+  melee_anim_t     = 0
+  melee_chain_t    = 0
+  melee_hit_done   = false
+  melee_lunge_left = 0
+end
+
+function start_melee_combo(n)
+  melee_combo  = n
+  melee_anim_t = MELEE.A_FR
+  melee_chain_t = get_melee_chain_fr(n)
+  melee_hit_done = false
+  local move_input = get_move_input()
+
+  if player.on_ground then
+    melee_lunge_left = get_melee_lunge_dist(n)
+    if move_input ~= 0 then
+      melee_lunge_left = M.max(1, M.floor(melee_lunge_left * MELEE.MOVE_LUNGE_SCALE))
+      player.vx *= MELEE.MOVE_VX_DAMP
+    end
+  else
+    melee_lunge_left = 0
+  end
+end
+
+function update_melee()
+  melee_anim_t  = dec_timer(melee_anim_t)
+  melee_chain_t = dec_timer(melee_chain_t)
+
+  if melee_combo > 0 and melee_chain_t <= 0 then
+    clear_melee_state()
+  end
+end
+
+function get_melee_sprite()
+  if melee_combo <= 0 then return nil end
+
+  if melee_anim_t <= 0 then
+    if melee_combo == 1 then return SPR.MELEE1_B end
+    if melee_combo == 2 then return SPR.MELEE2_B end
+    if melee_combo == 3 then return SPR.MELEE3_B end
+    return nil
+  end
+
+  local half_t = M.floor(MELEE.A_FR / 2)
+
+  if melee_combo == 1 then
+    return (melee_anim_t > half_t) and SPR.MELEE1_A or SPR.MELEE1_B
+  elseif melee_combo == 2 then
+    return (melee_anim_t > half_t) and SPR.MELEE2_A or SPR.MELEE2_B
+  elseif melee_combo == 3 then
+    return (melee_anim_t > half_t) and SPR.MELEE3_A or SPR.MELEE3_B
+  end
+
+  return nil
+end
+
+function draw_melee_hitbox()
+  if not is_melee_hit_active() then return end
+
+  local hx, hy, hw, hh = get_melee_hitbox()
+  rect(hx, hy, hx + hw - 1, hy + hh - 1, 8)
+end
+
+function draw_player_hurtbox()
+  if not PLAYER_CFG.DRAW_HURTBOX then return end
+
+  local hx, hy, hw, hh = get_player_hurtbox()
+  rect(hx, hy, hx + hw - 1, hy + hh - 1, 11)
+end
+
+-- Camera / FX
+
+function apply_camera()
+  local target_aim_x = 0
+  if player.aim then
+    target_aim_x = player.facing * CAM.AIM_LOOK
+  end
+  cam_aim_x += (target_aim_x - cam_aim_x) * CAM.AIM_DAMP
+
+  local target = player.x + player.w / 2 - SCR.W / 2 + cam_aim_x
+  target = clamp(target, -WORLD.HALF, WORLD.HALF - SCR.W)
+  camx  += (target - camx) * CAM.DAMP
+
+  local sx, sy = 0, 0
+  if shake_t > 0 then
+    sx = M.floor(rnd(shake_mag * 2 + 1)) - shake_mag
+    sy = M.floor(rnd(shake_mag * 2 + 1)) - shake_mag
+  end
+
+  last_cam_draw_x = M.floor(camx) + sx
+  last_cam_draw_y = sy
+  camera(last_cam_draw_x, last_cam_draw_y)
+end
+
+function start_shot_fx()
+  blackout_t = SHOT.FX_FR
+  flash_t    = SHOT.FX_FR
+  start_shake(SHAKE.FR_ON_SHOT, SHAKE.MAG_ON_SHOT)
+end
+
+function reset_tail()
+  tail_nodes = {}
+
+  local root_x = player.x + player.w / 2 + TAIL.ROOT_OX
+  local root_y = player.y + player.h / 2 + TAIL.ROOT_OY
+  local dir = -player.facing
+
+  for i = 1, TAIL.SEG_COUNT do
+    add(tail_nodes, {
+      x  = root_x + dir * (TAIL.SEG_LEN * i),
+      y  = root_y,
+      vx = 0,
+      vy = 0
+    })
+  end
+end
+
+function spawn_shot_smoke()
+  local cx = player.x + player.w / 2
+  local cy = player.y + player.h / 2
+  local count = SHOT_SMOKE.COUNT_MIN + flr(rnd(SHOT_SMOKE.COUNT_MAX - SHOT_SMOKE.COUNT_MIN + 1))
+
+  for i = 1, count do
+    local r = SHOT_SMOKE.R_MIN + rnd(SHOT_SMOKE.R_MAX - SHOT_SMOKE.R_MIN + 1)
+    add(shot_smokes, {
+      x  = cx + rnd(5) - 2,
+      y  = cy + rnd(5) - 2,
+      vx = player.vx * (0.4 + rnd(0.25)) - player.facing * (SHOT_SMOKE.BASE_VX + rnd(SHOT_SMOKE.JITTER_X)),
+      vy = -SHOT_SMOKE.BASE_VY + rnd(SHOT_SMOKE.JITTER_Y) - SHOT_SMOKE.JITTER_Y * 0.5,
+      r  = r,
+      t  = SHOT_SMOKE.LIFE_FR
+    })
+  end
+end
+
+function spawn_trail_smoke()
+  local cx = player.x + player.w / 2 + TRAIL_SMOKE.OFFSET_X
+  local cy = player.y + player.h / 2 + TRAIL_SMOKE.OFFSET_Y
+  local count = TRAIL_SMOKE.COUNT_MIN + flr(rnd(TRAIL_SMOKE.COUNT_MAX - TRAIL_SMOKE.COUNT_MIN + 1))
+
+  for i = 1, count do
+    local r = TRAIL_SMOKE.R_MIN + rnd(TRAIL_SMOKE.R_MAX - TRAIL_SMOKE.R_MIN + 1)
+    add(trail_smokes, {
+      x        = cx,
+      y        = cy,
+      vx       = -player.facing * (TRAIL_SMOKE.BASE_VX + rnd(TRAIL_SMOKE.JITTER_X)) + player.vx * 0.25,
+      vy       = -TRAIL_SMOKE.BASE_VY + rnd(TRAIL_SMOKE.JITTER_Y) - TRAIL_SMOKE.JITTER_Y * 0.5,
+      r        = r,
+      t        = TRAIL_SMOKE.LIFE_FR,
+      attach_t = TRAIL_SMOKE.ATTACH_FR,
+      offset_x = rnd(5) - 2,
+      offset_y = rnd(5) - 2
+    })
+  end
+end
+
+function apply_shot_push()
+  local cx = player.x + player.w / 2
+  local cy = player.y + player.h / 2
+  local radius = SHOT.PUSH_RADIUS
+
+  for s in all(trail_smokes) do
+    local dx = s.x - cx
+    local dy = s.y - cy
+    local dist = M.sqrt(dx * dx + dy * dy)
+
+    if dist <= radius then
+      local nx = (dist > 0) and (dx / dist) or (-player.facing)
+      local ny = (dist > 0) and (dy / dist) or 0
+      local power = 1 - (dist / radius)
+      s.attach_t = 0
+      s.vx += nx * SHOT.PUSH_SMOKE_V * power
+      s.vy += ny * SHOT.PUSH_SMOKE_V * power
+    end
+  end
+
+  for i = 1, #tail_nodes do
+    local n = tail_nodes[i]
+    local dx = n.x - cx
+    local dy = n.y - cy
+    local dist = M.sqrt(dx * dx + dy * dy)
+
+    if dist <= radius then
+      local nx = (dist > 0) and (dx / dist) or (-player.facing)
+      local ny = (dist > 0) and (dy / dist) or 0
+      local power = 1 - (dist / radius)
+      local softness = i / #tail_nodes
+      n.vx += nx * SHOT.PUSH_TAIL_VX * power * softness
+      n.vy += (ny - 0.15) * SHOT.PUSH_TAIL_VY * power * softness
+    end
+  end
+end
+
+function apply_recoil()
+  player.vx = clamp(
+    player.vx - player.facing * SHOT.RECOIL_VX,
+    -MOVE.MAX_VX, MOVE.MAX_VX
+  )
+end
+
+function spawn_bullet()
+  local bx = player.x + player.w / 2 + player.facing * BULLET.OFFSET_X
+  local by = player.y + player.h / 2 + BULLET.OFFSET_Y
+  add(bullets, { x = bx, y = by, vx = player.facing * BULLET.SPEED })
+end
+
+function update_shot_smoke()
+  for i = #shot_smokes, 1, -1 do
+    local s = shot_smokes[i]
+    s.t -= 1
+
+    if s.t <= 0 then
+      deli(shot_smokes, i)
+    else
+      s.x += s.vx
+      s.y += s.vy
+      s.vx *= SHOT_SMOKE.DRAG
+      s.vy *= SHOT_SMOKE.DRAG
+    end
+  end
+end
+
+function update_trail_smoke()
+  local cx = player.x + player.w / 2 + TRAIL_SMOKE.OFFSET_X
+  local cy = player.y + player.h / 2 + TRAIL_SMOKE.OFFSET_Y
+
+  for i = #trail_smokes, 1, -1 do
+    local s = trail_smokes[i]
+    s.t -= 1
+
+    if s.t <= 0 then
+      deli(trail_smokes, i)
+    else
+      if s.attach_t > 0 then
+        s.attach_t -= 1
+        s.x = cx + s.offset_x
+        s.y = cy + s.offset_y
+        s.vx += (-player.facing * TRAIL_SMOKE.BASE_VX + player.vx * 0.08 - s.vx) * 0.25
+      else
+        s.x += s.vx
+        s.y += s.vy
+      end
+
+      s.vx *= TRAIL_SMOKE.DRAG
+      s.vy *= TRAIL_SMOKE.DRAG
+    end
+  end
+end
+
+function update_tail()
+  local root_x = player.x + player.w / 2 + TAIL.ROOT_OX
+  local root_y = player.y + player.h / 2 + TAIL.ROOT_OY
+  local dir = -player.facing
+
+  if #tail_nodes ~= TAIL.SEG_COUNT then
+    reset_tail()
+  end
+
+  for i = 1, #tail_nodes do
+    local n = tail_nodes[i]
+    local prev_x = root_x
+    local prev_y = root_y
+    if i > 1 then
+      prev_x = tail_nodes[i - 1].x
+      prev_y = tail_nodes[i - 1].y
+    end
+
+    local pull = TAIL.TIP_PULL
+    if i == 1 then
+      pull = TAIL.ROOT_PULL
+    elseif i == 2 then
+      pull = TAIL.MID_PULL
+    end
+
+    local target_x = prev_x + dir * TAIL.SEG_LEN - player.vx * TAIL.FOLLOW_X * pull
+    local target_y = prev_y + TAIL.GRAV * (i * 2)
+    local dx = target_x - n.x
+    local dy = target_y - n.y
+
+    n.vx += dx * pull
+    n.vy += dy * pull
+    n.vy += TAIL.GRAV * (0.4 + i * 0.18)
+
+    n.vx *= TAIL.DRAG
+    n.vy *= TAIL.DRAG
+
+    n.x += n.vx
+    n.y += n.vy
+  end
+
+  for pass = 1, 2 do
+    local prev_x = root_x
+    local prev_y = root_y
+
+    for i = 1, #tail_nodes do
+      local n = tail_nodes[i]
+      local dx = n.x - prev_x
+      local dy = n.y - prev_y
+      local dist = M.sqrt(dx * dx + dy * dy)
+
+      if dist > 0 then
+        local diff = (dist - TAIL.SEG_LEN) / dist
+        local softness = (i == 1) and 0.85 or ((i == 2) and 0.6 or 0.38)
+        n.x -= dx * diff * softness
+        n.y -= dy * diff * softness
+      else
+        n.x = prev_x + dir * TAIL.SEG_LEN
+        n.y = prev_y
+      end
+
+      prev_x = n.x
+      prev_y = n.y
+    end
+  end
+end
+
+-- Dash action
+
+function start_dash()
+  if player.dash_t > 0  then return end
+  if player.aim         then return end
+
+  if dash_charges <= 0 then
+    trigger_empty_dash_feedback()
+    return
+  end
+
+  local dir = player.facing
+  if ibtn(0) then dir = -1 end
+  if ibtn(1) then dir =  1 end
+
+  if not spend_dash_charge() then
+    trigger_empty_dash_feedback()
+    return
+  end
+
+  clear_melee_state()
+
+  player.facing  = dir
+  player.dash_t  = DASH.FR
+  player.invuln_t = M.max(player.invuln_t, DASH.FR)
+  player.vx      = dir * get_dash_speed()
+end
+
+function spawn_afterimage(sid, flip_x)
+  add(afterimgs, {
+    x      = player.x,
+    y      = player.y,
+    sid    = sid,
+    flip_x = flip_x,
+    t      = DASH.AFTERIMG_LIFE
+  })
+end
+
+-- Draw: HUD elements
+
+function draw_dash_bar()
+  local cx      = player.x + player.w / 2
+  local max_charges = get_dash_charge_max()
+  local total_w = DASH.BAR_W * max_charges + DASH.BAR_GAP * (max_charges - 1)
+  local base_x  = M.floor(cx - total_w / 2)
+  local base_y  = M.floor(player.y - DASH.BAR_Y)
+
+  local shake_x = 0
+  local shake_y = 0
+  local empty_feedback = (dash_bar_empty_flash_t > 0 and dash_charges == 0)
+
+  if dash_bar_empty_shake_t > 0 and dash_charges == 0 then
+    shake_x = M.floor(rnd(3)) - 1
+    shake_y = M.floor(rnd(3)) - 1
+  end
+
+  local bar_x      = base_x + shake_x
+  local bar_y      = base_y + shake_y
+  local visual_fill = get_dash_visual_fill()
+
+  for i = 1, max_charges do
+    local seg_x = bar_x + (i - 1) * (DASH.BAR_W + DASH.BAR_GAP)
+    local seg_y = bar_y
+
+    rectfill(seg_x - 1, seg_y - 1, seg_x + DASH.BAR_W, seg_y + DASH.BAR_H, 0)
+
+    local empty_col = empty_feedback and 2 or 5
+    rectfill(seg_x, seg_y, seg_x + DASH.BAR_W - 1, seg_y + DASH.BAR_H - 1, empty_col)
+
+    local seg_fill = clamp(visual_fill - (i - 1), 0, 1)
+    local fill_w   = M.floor(seg_fill * DASH.BAR_W)
+
+    if fill_w > 0 then
+      local col = 10
+      if empty_feedback then
+        col = 8
+      elseif dash_bar_flash_t > 0 and i == dash_bar_flash_idx and seg_fill >= 1 then
+        col = 7
+      end
+      rectfill(seg_x, seg_y, seg_x + fill_w - 1, seg_y + DASH.BAR_H - 1, col)
+    end
+  end
+end
+
+function draw_player_guns()
+  local cx      = player.x + player.w / 2
+  local gun_max = get_gun_max()
+  local total_w = gun_max * (GUN.R * 2) + (gun_max - 1) * GUN.GAP
+  local base_x  = M.floor(cx - total_w / 2)
+  local cy      = M.floor(player.y - GUN.Y)
+
+  local shake_x = 0
+  local shake_y = 0
+  local empty_feedback = (player_gun_empty_flash_t > 0 and player_guns <= 0)
+
+  if player_gun_empty_shake_t > 0 and player_guns <= 0 then
+    shake_x = M.floor(rnd(3)) - 1
+    shake_y = M.floor(rnd(3)) - 1
+  end
+
+  base_x += shake_x
+  cy     += shake_y
+
+  for i = 1, gun_max do
+    local circle_x = base_x + GUN.R + (i - 1) * (GUN.R * 2 + GUN.GAP)
+    local filled   = (i <= player_guns)
+
+    if filled then
+      local col = player_gun_flash_t > 0 and 7 or 10
+      circfill(circle_x, cy, GUN.R, col)
+    else
+      local empty_col = empty_feedback and 8 or 5
+      circ(circle_x, cy, GUN.R, empty_col)
+    end
+  end
+end
+
+function draw_player_hp()
+  local hp_max = get_player_max_hp()
+  local total_w = hp_max * (PLAYER_CFG.HP_DOT_R * 2) + (hp_max - 1) * PLAYER_CFG.HP_DOT_GAP
+  local base_x = M.floor(player.x + player.w / 2 - total_w / 2)
+  local y = M.floor(player.y - PLAYER_CFG.HP_DOT_Y - 5)
+
+  for i = 1, hp_max do
+    local x = base_x + PLAYER_CFG.HP_DOT_R + (i - 1) * (PLAYER_CFG.HP_DOT_R * 2 + PLAYER_CFG.HP_DOT_GAP)
+    if i <= player_hp then
+      circfill(x, y, PLAYER_CFG.HP_DOT_R, 8)
+    else
+      circ(x, y, PLAYER_CFG.HP_DOT_R, 5)
+    end
+  end
+end
+
+function draw_heart(x, y, filled)
+  local fill_col = filled and 8 or 0
+  local outline_col = 8
+
+  circfill(x + 2, y + 2, 2, fill_col)
+  circfill(x + 5, y + 2, 2, fill_col)
+  rectfill(x + 1, y + 2, x + 6, y + 4, fill_col)
+  line(x,     y + 3, x + 3, y + 6, outline_col)
+  line(x + 7, y + 3, x + 4, y + 6, outline_col)
+  line(x + 1, y + 1, x + 1, y + 4, outline_col)
+  line(x + 6, y + 1, x + 6, y + 4, outline_col)
+  pset(x + 3, y + 6, outline_col)
+  pset(x + 4, y + 6, outline_col)
+end
+
+function draw_shrine_ui(shrine_x, shrine_y)
+  local shrine_cx = shrine_x + SHRINE.W / 2
+
+  local total_w  = SHRINE.GUN_MAX * (SHRINE.GUN_R * 2) + (SHRINE.GUN_MAX - 1) * SHRINE.GUN_GAP
+  local base_x   = M.floor(shrine_cx - total_w / 2)
+  local circles_y = M.floor(shrine_y - SHRINE.GUN_Y)
+
+  for i = 1, SHRINE.GUN_MAX do
+    local circle_x = base_x + SHRINE.GUN_R + (i - 1) * (SHRINE.GUN_R * 2 + SHRINE.GUN_GAP)
+    if i <= shrine_guns then
+      circfill(circle_x, circles_y, SHRINE.GUN_R, 10)
+    else
+      circ(circle_x, circles_y, SHRINE.GUN_R, 5)
+    end
+  end
+
+  local bar_x = M.floor(shrine_cx - SHRINE.BAR_W / 2)
+  local bar_y = M.floor(shrine_y - SHRINE.BAR_Y)
+
+  rectfill(bar_x - 1, bar_y - 1, bar_x + SHRINE.BAR_W, bar_y + SHRINE.BAR_H, 0)
+  rectfill(bar_x, bar_y, bar_x + SHRINE.BAR_W - 1, bar_y + SHRINE.BAR_H - 1, 5)
+
+  local progress = (shrine_guns >= SHRINE.GUN_MAX)
+    and 1
+    or (shrine_prod_t / get_shrine_produce_fr())
+
+  local fill_w = M.floor(clamp(progress, 0, 1) * SHRINE.BAR_W)
+  if fill_w > 0 then
+    rectfill(bar_x, bar_y, bar_x + fill_w - 1, bar_y + SHRINE.BAR_H - 1, 10)
+  end
+
+  local hearts_total_w = SHRINE.MAX_HP * SHRINE.HEART_W + (SHRINE.MAX_HP - 1) * SHRINE.HEART_GAP
+  local hearts_x = M.floor(shrine_cx - hearts_total_w / 2)
+  local hearts_y = M.floor(shrine_y - SHRINE.HEART_Y)
+
+  for i = 1, SHRINE.MAX_HP do
+    local heart_x = hearts_x + (i - 1) * (SHRINE.HEART_W + SHRINE.HEART_GAP)
+    draw_heart(heart_x, hearts_y, i <= shrine_hp)
+  end
+end
+
+function draw_gem(x, y)
+  line(x,          y - GEM.R,     x + GEM.R - 1, y,             GEM.HIGHLIGHT)
+  line(x + GEM.R - 1, y,          x,             y + GEM.R - 1, GEM.COLOR)
+  line(x,          y + GEM.R - 1, x - GEM.R + 1, y,             GEM.COLOR)
+  line(x - GEM.R + 1, y,          x,             y - GEM.R,     GEM.HIGHLIGHT)
+  pset(x, y - 1, 7)
+end
+
+function draw_gem_shards()
+  for s in all(gem_shards) do
+    rectfill(s.x - 1, s.y - 1, s.x, s.y, s.col)
+  end
+end
+
+function draw_dropped_guns()
+  for g in all(dropped_guns) do
+    local half_len = DROP_GUN.W / 2
+    local ca = cos(g.ang)
+    local sa = sin(g.ang)
+    line(
+      g.x - ca * half_len, g.y - sa * half_len,
+      g.x + ca * half_len, g.y + sa * half_len,
+      DROP_GUN.COLOR
+    )
+  end
+end
+
+function draw_monsters()
+  for m in all(monsters) do
+    local body_col = (m.hit_flash_t > 0) and 7 or MONSTER.COLOR
+    local wobble = m.on_ground and M.sin(m.idle_t) or 0
+    local extra_w = m.on_ground and M.floor(M.abs(wobble) * 2) or 0
+    local trim_h = m.on_ground and M.floor(M.abs(wobble)) or 0
+    local bob = m.on_ground and 0 or 1
+    local x1 = m.x - extra_w
+    local y1 = m.y + bob + trim_h
+    local x2 = m.x + m.w - 1 + extra_w
+    local y2 = m.y + m.h - 1 - trim_h
+
+    rectfill(x1, y1, x2, y2, body_col)
+  end
+end
+
+function draw_monster_gibs()
+  for g in all(monster_gibs) do
+    rectfill(g.x, g.y, g.x + g.s - 1, g.y + g.s - 1, g.c)
+  end
+end
+
+function draw_souls()
+  for s in all(souls) do
+    pset(M.floor(s.x), M.floor(s.y), SOUL.COLOR)
+  end
+end
+
+function draw_soul_sparks()
+  for s in all(soul_sparks) do
+    local x = M.floor(s.x)
+    local y = M.floor(s.y)
+    pset(x, y, SOUL.SPARK_COLOR)
+    if s.t > SOUL.SPARK_FR / 2 then
+      pset(x - 1, y, SOUL.SPARK_COLOR)
+      pset(x + 1, y, SOUL.SPARK_COLOR)
+      pset(x, y - 1, SOUL.SPARK_COLOR)
+      pset(x, y + 1, SOUL.SPARK_COLOR)
+    end
+  end
+end
+
+function draw_shot_smoke()
+  for s in all(shot_smokes) do
+    local life = s.t / SHOT_SMOKE.LIFE_FR
+    local r = M.max(1, M.floor(s.r * life))
+    local col = 6
+    if life > 0.66 then
+      col = 7
+    elseif life < 0.33 then
+      col = 5
+    end
+
+    circfill(s.x, s.y, r, col)
+    if r > 2 then
+      circ(s.x + 1, s.y, r - 1, 13)
+    end
+  end
+end
+
+function draw_trail_smoke()
+  for s in all(trail_smokes) do
+    local life = s.t / TRAIL_SMOKE.LIFE_FR
+    local r = M.max(1, M.floor(s.r * life))
+    local col = 6
+    if life > 0.66 then
+      col = 7
+    elseif life < 0.33 then
+      col = 5
+    end
+
+    circfill(s.x, s.y, r, col)
+    if r > 1 then
+      circ(s.x, s.y, r, 13)
+    end
+  end
+end
+
+function draw_tail()
+  local root_x = player.x + player.w / 2 + TAIL.ROOT_OX
+  local root_y = player.y + player.h / 2 + TAIL.ROOT_OY
+
+  if #tail_nodes <= 0 then return end
+
+  local prev_x = root_x
+  local prev_y = root_y
+
+  for i = 1, #tail_nodes do
+    local n = tail_nodes[i]
+    local col = (i == #tail_nodes) and TAIL.COLOR_TIP or TAIL.COLOR_MAIN
+    local r = (i == 1) and 3 or ((i == #tail_nodes) and 2 or 2.5)
+    line(prev_x, prev_y, n.x, n.y, col)
+    circfill(n.x, n.y, r, col)
+    prev_x = n.x
+    prev_y = n.y
+  end
+end
+
+function draw_shrine_wave()
+  if shrine_wave_t <= 0 and shrine_wave_r <= 0 then return end
+
+  local sx, sy = get_shrine_center()
+  local r = M.floor(shrine_wave_r)
+  if r <= 0 then return end
+
+  circ(sx, sy, r, 8)
+  if r > 2 then circ(sx, sy, r - 2, 7) end
+end
+
+-- Draw: big 7-segment digit display
+
+function draw_big_digit(ch, x, y, col, s)
+  local segs = {
+    ["0"] = {1,1,1,0,1,1,1},
+    ["1"] = {0,0,1,0,0,1,0},
+    ["2"] = {1,0,1,1,1,0,1},
+    ["3"] = {1,0,1,1,0,1,1},
+    ["4"] = {0,1,1,1,0,1,0},
+    ["5"] = {1,1,0,1,0,1,1},
+    ["6"] = {1,1,0,1,1,1,1},
+    ["7"] = {1,0,1,0,0,1,0},
+    ["8"] = {1,1,1,1,1,1,1},
+    ["9"] = {1,1,1,1,0,1,1},
+  }
+
+  local d = segs[ch]
+  if not d then return end
+
+  local dw = 3 * s
+  local dh = 5 * s
+  local t  = s
+
+  -- Top
+  if d[1] == 1 then rectfill(x,      y,           x + dw - 1,   y + t - 1,        col) end
+  -- Top-left
+  if d[2] == 1 then rectfill(x,      y,           x + t - 1,    y + dh - 1,       col) end
+  -- Top-right
+  if d[3] == 1 then rectfill(x+dw-t, y,           x + dw - 1,   y + dh - 1,       col) end
+  -- Middle
+  if d[4] == 1 then rectfill(x,      y+dh-t,      x + dw - 1,   y + dh + t - 1,   col) end
+  -- FIX: corrected a previous typo that referenced an undefined variable.
+  -- Bottom-left
+  if d[5] == 1 then rectfill(x,      y+dh,        x + t - 1,    y + dh*2 - 1,     col) end
+  -- Bottom-right
+  if d[6] == 1 then rectfill(x+dw-t, y+dh,        x + dw - 1,   y + dh*2 - 1,     col) end
+  -- Bottom
+  if d[7] == 1 then rectfill(x,      y+dh*2-t,    x + dw - 1,   y + dh*2 - 1,     col) end
+end
+
+function draw_big_number(n, cx, y, col, s, spacing)
+  local str     = tostring(n)
+  local digit_w = 3 * s
+  local total_w = #str * digit_w + (#str - 1) * spacing
+  local x       = M.floor(cx - total_w / 2)
+
+  for i = 1, #str do
+    local ch = str:sub(i, i)
+    draw_big_digit(ch, x, y, col, s)
+    x += digit_w + spacing
+  end
+end
+
+function draw_top_ui()
+  camera(0, 0)
+
+  local score_cx = SCR.W / 2
+
+  draw_big_number(
+    gems_collected,
+    score_cx, UI.SCORE_Y,
+    7, UI.SCORE_SCALE, UI.SCORE_DIGIT_SPACING
+  )
+
+  draw_big_number(
+    souls_collected,
+    score_cx, UI.SCORE_Y + UI.SCORE_STACK_GAP,
+    SOUL.COLOR, UI.SOUL_SCORE_SCALE, UI.SOUL_SCORE_DIGIT_SPACING
+  )
+
+  if gem.active then
+    local gem_sx  = gem.x - last_cam_draw_x
+    local gem_sy  = gem.y - last_cam_draw_y
+    local visible = rect_visible(
+      gem_sx - GEM.R, gem_sy - GEM.R,
+      GEM.R * 2, GEM.R * 2,
+      0, 0, SCR.W, SCR.H
+    )
+
+    if not visible then
+      if gem_sx + GEM.R < 0 then
+        spr(SPR.UI_ARROW, UI.ARROW_MARGIN, UI.ARROW_Y, false, false)
+      elseif gem_sx - GEM.R >= SCR.W then
+        spr(SPR.UI_ARROW, SCR.W - UI.ARROW_MARGIN - UI.ARROW_W, UI.ARROW_Y, true, false)
+      end
+    end
+  end
+end
+
+function draw_upgrade_popup()
+  if not upgrade_popup then return end
+
+  camera(0, 0)
+
+  local px = M.floor((SCR.W - UPGRADE.PANEL_W) * 0.5)
+  local py = M.floor((SCR.H - UPGRADE.PANEL_H) * 0.5)
+  local slot_gap = 12
+  local slot_y = py + 38
+  local slot1_x = px + 18
+  local slot2_x = slot1_x + UPGRADE.SLOT_W + slot_gap
+
+  rectfill(px, py, px + UPGRADE.PANEL_W, py + UPGRADE.PANEL_H, 1)
+  rect(px, py, px + UPGRADE.PANEL_W, py + UPGRADE.PANEL_H, 7)
+  print("upgrade", px + 120, py + 10, 7)
+  print("left/right choose  z confirm", px + 62, py + 22, 6)
+
+  for i = 1, 2 do
+    local opt = upgrade_options[i]
+    local sx = (i == 1) and slot1_x or slot2_x
+    local border = (upgrade_sel == i) and 10 or 5
+    local fill = (upgrade_sel == i) and 2 or 0
+
+    rectfill(sx, slot_y, sx + UPGRADE.SLOT_W, slot_y + UPGRADE.SLOT_H, fill)
+    rect(sx, slot_y, sx + UPGRADE.SLOT_W, slot_y + UPGRADE.SLOT_H, border)
+
+    if opt then
+      print(opt.title, sx + 8, slot_y + 8, 7)
+      print(opt.subtitle, sx + 8, slot_y + 22, 6)
+      print(opt.value_text, sx + 8, slot_y + 44, SOUL.COLOR)
+    else
+      print("maxed", sx + 40, slot_y + 28, 5)
+    end
+  end
+end
+
+function draw_dither_overlay(col, step, phase)
+  for y = 0, SCR.H - 1 do
+    local start = ((y + phase) % step)
+    for x = start, SCR.W - 1, step do
+      pset(x, y, col)
+    end
+  end
+end
+
+function draw_modal_overlay()
+  local show_upgrade_overlay = false
+
+  if upgrade_popup then
+    show_upgrade_overlay = true
+  elseif modal.delay_t > 0 and modal.kind == "upgrade" then
+    show_upgrade_overlay = true
+  end
+
+  if not show_upgrade_overlay then return end
+
+  camera(0, 0)
+  draw_dither_overlay(MODAL.OVERLAY_COL, MODAL.OVERLAY_STEP, 0)
+
+  if modal.delay_t > 0 and modal.kind == "upgrade" then
+    print(MODAL.UPGRADE_TEXT, SCR.W / 2 - 26, SCR.H / 2 - 10, MODAL.UPGRADE_TEXT_COL)
+    print(MODAL.UPGRADE_SUBTEXT, SCR.W / 2 - 42, SCR.H / 2 + 8, MODAL.UPGRADE_SUBTEXT_COL)
+  end
+end
+
+function draw_touch_ui()
+  if not TOUCH_UI.ENABLED then return end
+
+  camera(0, 0)
+
+  for b in all(touch_ui.buttons) do
+    local pressed = touch_ui.btn[b.id]
+    local fill = pressed and TOUCH_UI.FILL_ON or TOUCH_UI.FILL_IDLE
+    local text_col = pressed and TOUCH_UI.TEXT_ON or TOUCH_UI.TEXT_IDLE
+
+    circfill(b.x, b.y, b.r, fill)
+    circ(b.x, b.y, b.r, TOUCH_UI.OUTLINE)
+    print(b.label, b.x - TOUCH_UI.LABEL_OX, b.y - TOUCH_UI.LABEL_OY, text_col)
+  end
+end
+
+-- Reset
+
+function reset()
+  player.x       = -player.w / 2
+  player.y       = WORLD.GROUND_Y - player.h
+  player.vx, player.vy = 0, 0
+  player.on_ground = true
+  player.aim     = false
+  player.facing  = 1
+  player.dash_t  = 0
+  player.invuln_t = 0
+
+  bullets      = {}
+  shot_smokes  = {}
+  trail_smokes = {}
+  tail_nodes   = {}
+  monsters     = {}
+  monster_gibs = {}
+  souls        = {}
+  soul_sparks  = {}
+  afterimgs    = {}
+  afterimg_tick = 0
+
+  monster_spawn_t.l = 0
+  monster_spawn_t.r = 0
+  shrine_hp      = SHRINE.MAX_HP
+  shrine_alert_t = 0
+  shrine_wave_t  = 0
+  shrine_wave_r  = 0
+  game_over      = false
+  modal.run_ended = false
+  game_over_msg  = "shrine fell"
+  hitstop_t   = 0
+  blackout_t = 0
+  flash_t    = 0
+  shake_t    = 0
+  shake_mag  = 0
+
+  last_mx       = 0
+  peak_vx       = 0.0
+  had_run_input = false
+
+  dash_charges           = get_dash_charge_max()
+  dash_recover_t         = 0
+  dash_bar_flash_t       = 0
+  dash_bar_flash_idx     = 0
+  dash_bar_empty_shake_t = 0
+  dash_bar_empty_flash_t = 0
+
+  player_guns              = get_gun_max()
+  gun_switch_t             = 0
+  player_gun_flash_t       = 0
+  player_gun_empty_shake_t = 0
+  player_gun_empty_flash_t = 0
+  dropped_guns             = {}
+
+  shrine_guns     = SHRINE.GUN_MAX
+  shrine_prod_t   = get_shrine_produce_fr()
+  gem_shards      = {}
+  gems_collected  = 0
+  souls_collected = 0
+  next_upgrade_goal = UPGRADE.GOAL_STEP
+  upgrade_popup = false
+  upgrade_options = {}
+  upgrade_sel = 1
+  init_touch_ui()
+  modal.delay_t = 0
+  modal.kind = nil
+  modal.popup_input_armed = false
+  popup_btn_prev.left = false
+  popup_btn_prev.right = false
+  popup_btn_prev.confirm = false
+  upgrade_levels = {
+    fire_rate     = 0,
+    dash_count    = 0,
+    melee_range   = 0,
+    max_hp        = 0,
+    mag_size      = 0,
+    shrine_reload = 0
+  }
+  cheat_soul_idx = 1
+  first_gem_spawn = true
+  player_hp      = get_player_max_hp()
+  spawn_gem()
+
+  clear_melee_state()
+  reset_tail()
+
+  cam_aim_x = 0.0
+
+  local target = player.x + player.w / 2 - SCR.W / 2
+  camx = clamp(target, -WORLD.HALF, WORLD.HALF - SCR.W)
+end
+
+-- Main loop
+
+function _init()
+  init_touch_ui()
+  reset()
+end
+
+function _update()
+  update_touch_ui()
+
+  if game_over then
+    if arm_popup_input_if_ready() and ibtnp(4) then reset() end
+    return
+  end
+
+  if upgrade_popup then
+    update_upgrade_popup()
+    return
+  end
+
+  local slow_only = update_modal_delay()
+  if game_over or upgrade_popup then
+    return
+  end
+
+  if modal.delay_t > 0 then
+    if modal.kind == "upgrade" then
+      blackout_t = dec_timer(blackout_t)
+      flash_t    = dec_timer(flash_t)
+      shake_t    = dec_timer(shake_t)
+      if shake_t == 0 then shake_mag = 0 end
+      return
+    end
+
+    blackout_t = dec_timer(blackout_t)
+    flash_t    = dec_timer(flash_t)
+    shake_t    = dec_timer(shake_t)
+    if shake_t == 0 then shake_mag = 0 end
+
+    player.invuln_t          = dec_timer(player.invuln_t)
+    gun_switch_t             = dec_timer(gun_switch_t)
+    player_gun_flash_t       = dec_timer(player_gun_flash_t)
+    player_gun_empty_shake_t = dec_timer(player_gun_empty_shake_t)
+    player_gun_empty_flash_t = dec_timer(player_gun_empty_flash_t)
+
+    if not slow_only then
+      update_dropped_guns()
+      update_shot_smoke()
+      update_trail_smoke()
+      update_tail()
+      update_monster_gibs()
+      update_souls()
+      update_soul_sparks()
+      update_shrine_wave()
+
+      for i = #afterimgs, 1, -1 do
+        local a = afterimgs[i]
+        a.t -= 1
+        if a.t <= 0 then deli(afterimgs, i) end
+      end
+    end
+
+    return
+  end
+
+  if hitstop_t > 0 then
+    hitstop_t -= 1
+    return
+  end
+
+  blackout_t = dec_timer(blackout_t)
+  flash_t    = dec_timer(flash_t)
+  shake_t    = dec_timer(shake_t)
+  if shake_t == 0 then shake_mag = 0 end
+
+  player.invuln_t          = dec_timer(player.invuln_t)
+  gun_switch_t             = dec_timer(gun_switch_t)
+  player_gun_flash_t       = dec_timer(player_gun_flash_t)
+  player_gun_empty_shake_t = dec_timer(player_gun_empty_shake_t)
+  player_gun_empty_flash_t = dec_timer(player_gun_empty_flash_t)
+
+  update_test_cheats()
+  update_dash_recovery()
+  update_shrine_production()
+  update_gem_shards()
+  update_dropped_guns()
+  update_shot_smoke()
+  update_trail_smoke()
+  update_tail()
+  update_monster_spawner()
+  update_monster_gibs()
+  update_souls()
+  update_soul_sparks()
+  maybe_open_upgrade_popup()
+  if upgrade_popup then return end
+  update_monsters()
+  update_shrine_wave()
+  update_melee()
+
+  for i = #afterimgs, 1, -1 do
+    local a = afterimgs[i]
+    a.t -= 1
+    if a.t <= 0 then deli(afterimgs, i) end
+  end
+
+  local melee_active = is_melee_active()
+
+  if melee_lunge_left > 0 and player.on_ground and player.dash_t == 0 then
+    local step = M.min(MELEE.LUNGE_STEP, melee_lunge_left)
+    player.x        += player.facing * step
+    melee_lunge_left -= step
+  end
+
+  player.aim = (
+    player.on_ground and
+    (player.dash_t == 0) and
+    (not melee_active) and
+    (ibtn(3) or touch_ui.btn[4])
+  )
+
+  if ibtnp(5) then start_dash() end
+
+  if ibtnp(4) and (not player.aim) and player.dash_t == 0 then
+    if melee_combo == 0 then
+      start_melee_combo(1)
+    elseif melee_combo < MELEE.COMBO_MAX and melee_chain_t > 0 then
+      start_melee_combo(melee_combo + 1)
+    end
+  end
+
+  -- Dash movement
+  if player.dash_t > 0 then
+    player.dash_t -= 1
+    player.vx      = player.facing * get_dash_speed()
+
+    afterimg_tick += 1
+    if afterimg_tick >= DASH.AFTERIMG_SPAWN_EVERY then
+      afterimg_tick = 0
+      local sid    = player.on_ground and SPR.IDLE or SPR.JUMP
+      local flip_x = (player.facing == -1)
+      spawn_afterimage(sid, flip_x)
+    end
+
+    if player.dash_t == 0 then
+      player.invuln_t = M.max(player.invuln_t, DASH.INVULN_AFTER)
+      player.vx       = player.vx * DASH.END_BOOST
+    end
+  else
+    afterimg_tick = 0
+  end
+
+  -- Horizontal input
+  local raw_mx = get_move_input()
+  local mx = 0
+  if (player.dash_t == 0) and (not player.aim) and (not melee_active) then
+    mx = raw_mx
+  end
+  last_mx = mx
+
+  if mx ~= 0 then player.facing = sgn(mx) end
+
+  if mx ~= 0 and player.on_ground and player.dash_t == 0 and
+     (not player.aim) and (not melee_active) then
+    had_run_input = true
+  end
+
+  -- Jump
+  if (player.dash_t == 0) and (not player.aim) and (not melee_active) and
+     ibtnp(2) and player.on_ground then
+    player.vy       = -MOVE.JUMP_V
+    player.on_ground = false
+  end
+
+  -- Shoot
+  if player.aim and ibtnp(4) then
+    if player_guns > 0 and gun_switch_t == 0 then
+      start_shot_fx()
+      spawn_bullet()
+      spawn_shot_smoke()
+      spawn_trail_smoke()
+      apply_shot_push()
+      apply_recoil()
+      if player_guns > 1 then
+        spawn_dropped_gun()
+      end
+
+      player_guns -= 1
+      if player_guns > 0 then
+        gun_switch_t = get_gun_switch_fr()
+      end
+    elseif player_guns <= 0 then
+      trigger_empty_gun_feedback()
+    end
+  end
+
+  try_melee_hit_monsters()
+
+  -- Acceleration / friction
+  if (player.dash_t == 0) and (not player.aim) and (not melee_active) then
+    player.vx += mx * MOVE.ACC
+  end
+
+  if (player.dash_t == 0) and player.on_ground and mx == 0 and
+     ((not melee_active) or raw_mx == 0) then
+    local fric = melee_active and MELEE.FRIC or MOVE.FRIC
+    player.vx *= fric
+    if M.abs(player.vx) < 0.01 then player.vx = 0 end
+  end
+
+  if player.dash_t == 0 and (not melee_active) then
+    player.vx = clamp(player.vx, -MOVE.MAX_VX, MOVE.MAX_VX)
+  end
+
+  if player.dash_t == 0 and mx ~= 0 then
+    peak_vx = M.max(peak_vx, M.abs(player.vx))
+  end
+
+  if player.on_ground and M.abs(player.vx) == 0 then
+    peak_vx       = 0.0
+    had_run_input = false
+  end
+
+  -- Gravity + movement
+  player.vy = M.min(player.vy + MOVE.GRAV, MOVE.MAX_FALL)
+  player.x += player.vx
+  player.y += player.vy
+
+  -- Ground collision
+  local gy = WORLD.GROUND_Y - player.h
+  if player.y >= gy then
+    player.y        = gy
+    player.vy       = 0
+    player.on_ground = true
+  else
+    player.on_ground = false
+  end
+
+  -- World boundary
+  local minx = -WORLD.HALF
+  local maxx =  WORLD.HALF - player.w
+  if player.x < minx then
+    player.x  = minx
+    player.vx = 0
+  elseif player.x > maxx then
+    player.x  = maxx
+    player.vx = 0
+  end
+
+  -- Shrine overlap
+  local shrine_x, shrine_y = get_shrine_pos()
+  local now_in_shrine = aabb_overlap(
+    player.x, player.y, player.w, player.h,
+    shrine_x, shrine_y, SHRINE.W, SHRINE.H
+  )
+  if now_in_shrine then try_refill_from_shrine() end
+
+  -- Gem pickup
+  if gem.active and aabb_overlap(
+    player.x, player.y, player.w, player.h,
+    gem.x - GEM.R, gem.y - GEM.R, GEM.R * 2, GEM.R * 2
+  ) then
+    collect_gem()
+  end
+
+  -- Bullet movement + cull
+  for i = #bullets, 1, -1 do
+    local b = bullets[i]
+    local prev_x = b.x
+    b.x += b.vx
+    apply_bullet_hits(prev_x, b.x, b.y)
+    if b.x < (-WORLD.HALF - BULLET.PAD) or b.x > (WORLD.HALF + BULLET.PAD) then
+      deli(bullets, i)
+    end
+  end
+end
+
+function _draw()
+  cls()
+  apply_camera()
+
+  -- Ground
+  rectfill(-WORLD.HALF, WORLD.GROUND_Y,     WORLD.HALF, WORLD.GROUND_Y,  11)
+  rectfill(-WORLD.HALF, WORLD.GROUND_Y + 1, WORLD.HALF, SCR.H,            3)
+
+  -- Shrine
+  local shrine_x, shrine_y = get_shrine_pos()
+  spr(SPR.SHRINE, shrine_x, shrine_y)
+  draw_shrine_ui(shrine_x, shrine_y)
+
+  -- Gem
+  draw_shot_smoke()
+  draw_trail_smoke()
+  draw_monsters()
+  if gem.active then draw_gem(gem.x, gem.y) end
+  draw_gem_shards()
+  draw_shrine_wave()
+  draw_monster_gibs()
+  draw_souls()
+  draw_soul_sparks()
+
+  -- Slide detection
+  local sliding = (
+    player.dash_t == 0 and
+    player.on_ground   and
+    last_mx == 0        and
+    had_run_input       and
+    M.abs(player.vx) > SLIDE.EPS and
+    peak_vx >= SLIDE.MIN_PEAK
+  )
+
+  -- Sprite selection
+  local sid       = SPR.IDLE
+  local melee_sid = get_melee_sprite()
+
+  if melee_sid then
+    sid = melee_sid
+  elseif not player.on_ground then
+    sid = SPR.JUMP
+  elseif player.aim then
+    sid = SPR.AIM
+  elseif sliding then
+    sid = SPR.SLIDE
+  end
+
+  local flip_x = (player.facing == -1)
+
+  -- Afterimages
+  for a in all(afterimgs) do
+    if a.t > 4 or (a.t % 2 == 0) then
+      spr(a.sid, a.x, a.y, a.flip_x, false)
+    end
+  end
+
+  draw_dropped_guns()
+  draw_tail()
+
+  -- Player
+  local blink_player = (
+    player.invuln_t > 0 and
+    ((player.invuln_t % PLAYER_CFG.BLINK_FR) < M.floor(PLAYER_CFG.BLINK_FR / 2))
+  )
+  if not blink_player then
+    spr(sid, player.x, player.y, flip_x, false)
+  end
+  draw_player_hurtbox()
+  draw_melee_hitbox()
+  draw_player_hp()
+
+  draw_dash_bar()
+  draw_player_guns()
+
+  -- Aim laser
+  if player.aim then
+    local cx  = player.x + player.w / 2
+    local cy  = player.y + player.h / 2
+    local dir = player.facing
+    line(cx + dir * 6, cy - 4, cx + dir * 36, cy - 4, 4)
+  end
+
+  -- Bullets
+  for b in all(bullets) do
+    rectfill(b.x - 2, b.y - 1, b.x + 2, b.y, 7)
+  end
+
+  -- Shot blackout
+  if blackout_t > 0 then
+    camera(0, 0)
+    rectfill(0, 0, SCR.W, SCR.H, 0)
+  end
+
+  -- Muzzle flash
+  if flash_t > 0 then
+    camera(last_cam_draw_x, last_cam_draw_y)
+    local cx = player.x + player.w / 2
+    local cy = player.y + player.h / 2
+    circfill(cx, cy, SHOT.MUZZLE_FLASH_R, 7)
+  end
+
+  camera(0, 0)
+  draw_top_ui()
+  draw_modal_overlay()
+
+  if upgrade_popup then
+    draw_upgrade_popup()
+  end
+
+  if shrine_alert_t > 0 then
+    rect(0, 0, SCR.W - 1, SCR.H - 1, 8)
+    rect(1, 1, SCR.W - 2, SCR.H - 2, 2)
+    rect(2, 2, SCR.W - 3, SCR.H - 3, 8)
+  end
+
+  if game_over then
+    rectfill(0, 0, SCR.W, SCR.H, 0)
+    print("game over", SCR.W / 2 - 28, SCR.H / 2 - 8, 8)
+    print(game_over_msg, SCR.W / 2 - 28, SCR.H / 2 + 8, 7)
+    print("press z restart", SCR.W / 2 - 42, SCR.H / 2 + 24, 6)
+  end
+
+  draw_touch_ui()
+end
 :: .info.pod
---[[pod,created="2026-01-15 17:19:56",modified="2026-05-13 02:14:31",runtime=24,workspaces={{location="main.lua#2655",workspace_index=1}}]]
+--[[pod,created="2026-01-15 17:19:56",modified="2026-05-13 02:56:58",runtime=26,workspaces={}]]
 :: gfx/.info.pod
---[[pod,created="2026-01-15 17:19:56",modified="2026-05-13 02:14:31"]]
+--[[pod,created="2026-01-15 17:19:56",modified="2026-05-13 02:56:58"]]
 :: gfx/0.gfx
 b64$LS1bW3BvZCxjcmVhdGVkPSIyMDI1LTAxLTE3IDEwOjM1OjQ4Iixtb2RpZmllZD0iMjAyNi0w
 NC0yMiAwODo0ODoxOSIscmV2aXNpb249MjFdXWx6NAALBgAAazcAAPMhe1swXT17Ym1wPXB4dQBD
@@ -42,18 +2941,20 @@ MA5tHgUAPw7wBwUAEOA_LR7wBy5NDvAGrvAGjkMATgd_8AcGAD_O8AgGABH-Jw618ADV8AEVANXg
 ZQAVDiAV8AAFAKUQFdD1AfAAxQD1EAAF8AAVAPUe4PUaDjXwA6UQ9QcwJdARDB8zXgJcDw0OEx83
 ZQAeDzEA-----------------------------------------------YUG09OX19
 :: map/.info.pod
---[[pod,created="2026-01-15 17:19:56",modified="2026-05-13 02:14:31"]]
+--[[pod,created="2026-01-15 17:19:56",modified="2026-05-13 02:56:58"]]
 :: map/0.map
 b64$LS1bW3BvZCxjcmVhdGVkPSIyMDI1LTAxLTE3IDEwOjM1OjQ4Iixtb2RpZmllZD0iMjAyNS0w
 MS0xNyAxMDozNzo0NCIscmV2aXNpb249MV1dbHo0AFQAAABEEAAA8Ah7e2JtcD11c2VyZGF0YSgi
 aTE2IiwzMgMALyIwAQD--------------------7oSIpLHBhbl94PTAIANJ5PTAsdGlsZV9oPTE2
 CgBgdz0xNn19
 :: sfx/.info.pod
---[[pod,created="2026-01-15 17:19:56",modified="2026-05-13 02:14:31"]]
+--[[pod,created="2026-01-15 17:19:56",modified="2026-05-13 02:56:58"]]
 :: sfx/0.sfx
 b64$LS1bW3BvZCxjcmVhdGVkPSIyMDI1LTA3LTMxIDA4OjMwOjI4Iixtb2RpZmllZD0iMjAyNS0w
 Ny0zMSAwODozMDoyOCIscmV2aXNpb249MF1dbHo0AKAAAAALCgAA-zBweHUAAygAAAQABA9AEAIO
 AAGgASACoA4ADxAADfDKAQIDQA8PkAQFBgdADJAICQoLQAyQDwwPDQ8ODEAM8P8BAOv-J6oBEAYP
 MBABIAEgAfAAAhACDhABIA8hIAEwD0Dwww8oD--wxg-4Cg--D4AP9w8NAfAJARAGDjAA------_9
 H-8BAKzPyA9AAA8QQP--sPD-AQD-6lD-----KQ==
+:: src/.info.pod
+--[[pod,created="2026-05-13 02:56:21",modified="2026-05-13 02:56:58"]]
 :: [eoc]
